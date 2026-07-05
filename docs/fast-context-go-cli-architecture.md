@@ -18,7 +18,13 @@
 
 上游仓库：`https://github.com/SammySnake-d/fast-context-mcp`
 
-本次评估参考的上游提交：`1fb45dab4cab009fe6ab247a6beca7008cca1b1b`
+本次评估参考的上游提交：`1fb45dab4cab009fe6ab247a6beca7008cca1b1b`（GitHub v1.2.2）
+
+> **2026-07-05 更新**：GitHub 仓库已停更在 v1.2.2；npm 包 `fast-context-mcp` 持续演进（当前 1.5.2）。
+> 本项目已对齐 npm 1.5.2 的功能：bootstrap + hotspot repo map（`internal/dirscore` BM25F/probe/RRF）、
+> grep keywords 本地扩展、无结果自动重试、`--include-snippets` 代码片段输出、`--tree-depth 0` 自动深度、
+> 智能上下文裁剪 + 320KB preflight trim、默认 exclude 合并、FC_* 环境变量配置、key 截断自愈。
+> 后续对齐请以 `npm pack fast-context-mcp@latest` 解包内容为基准，而不是 GitHub 仓库。
 
 上游当前是 Node.js MCP server：
 

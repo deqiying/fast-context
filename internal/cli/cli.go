@@ -47,14 +47,26 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	rt := config.ReadRuntime()
 	opts := search.Options{
 		ProjectRoot: cwd(),
 		TreeDepth:   config.DefaultTreeDepth,
-		MaxTurns:    config.DefaultMaxTurns,
-		MaxCommands: config.DefaultMaxCommands,
+		MaxTurns:    rt.MaxTurns,
+		MaxCommands: rt.MaxCommands,
 		MaxResults:  config.DefaultMaxResults,
-		Timeout:     config.DefaultTimeout,
+		Timeout:     rt.Timeout,
 		Format:      "text",
+
+		RepoMapMode:          rt.RepoMapMode,
+		BootstrapEnabled:     rt.BootstrapEnabled,
+		BootstrapTreeDepth:   rt.BootstrapTreeDepth,
+		BootstrapMaxTurns:    rt.BootstrapMaxTurns,
+		BootstrapMaxCommands: rt.BootstrapMaxCommands,
+		HotspotTopK:          rt.HotspotTopK,
+		HotspotTreeDepth:     rt.HotspotTreeDepth,
+		HotspotMaxBytes:      rt.HotspotMaxBytes,
+		IncludeSnippets:      rt.IncludeSnippets,
+		Verbose:              rt.Debug,
 	}
 
 	var queryParts []string
@@ -96,7 +108,7 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			if err != nil {
 				return usageError(stderr, "invalid --tree-depth")
 			}
-			opts.TreeDepth = config.ClampInt(n, 1, 6)
+			opts.TreeDepth = config.ClampInt(n, 0, 6)
 		case "--max-turns":
 			v, ok := readValue()
 			if !ok {
@@ -152,6 +164,19 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 				return usageError(stderr, "--format must be text or json")
 			}
 			opts.Format = v
+		case "--include-snippets":
+			opts.IncludeSnippets = true
+		case "--repo-map-mode":
+			v, ok := readValue()
+			if !ok {
+				return usageError(stderr, "missing value for --repo-map-mode")
+			}
+			if v != "classic" && v != "bootstrap_hotspot" {
+				return usageError(stderr, "--repo-map-mode must be classic or bootstrap_hotspot")
+			}
+			opts.RepoMapMode = v
+		case "--no-bootstrap":
+			opts.BootstrapEnabled = false
 		case "--verbose":
 			opts.Verbose = true
 		default:
@@ -170,19 +195,19 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 
 	client := windsurf.NewClient(nil)
-	result, err := search.Run(ctx, opts, client)
+	result, err := search.RunPipeline(ctx, opts, client)
 	if opts.Format == "json" {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err != nil {
-			_ = enc.Encode(output.ErrorJSON(err))
+			_ = enc.Encode(output.ErrorJSON(err, result))
 			return 1
 		}
 		_ = enc.Encode(result)
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, output.FormatError(err, opts))
+		fmt.Fprintln(stderr, output.FormatError(err, opts, result))
 		return 1
 	}
 	fmt.Fprint(stdout, output.FormatText(result, opts))
@@ -422,14 +447,23 @@ func printSearchHelp(w io.Writer) {
 
 Flags:
   --project, -p <path>       Project root (default: current directory)
-  --tree-depth <1..6>        Repo map depth (default: 3)
+  --tree-depth <0..6>        Repo map depth; 0 = auto by project size (default: 3)
   --max-turns <1..5>         Search rounds (default: 3)
   --max-commands <1..20>     Local commands per round (default: 8)
   --max-results <1..30>      Maximum result files (default: 10)
   --timeout <duration>       Stream timeout, e.g. 30s or 30000 (default: 30s)
-  --exclude <pattern>        Exclude path pattern; repeatable
+  --exclude <pattern>        Exclude path pattern; repeatable (defaults always applied)
+  --include-snippets         Attach code snippets to results (45KB budget)
+  --repo-map-mode <mode>     classic | bootstrap_hotspot (default: bootstrap_hotspot)
+  --no-bootstrap             Skip the bootstrap keyword/hotspot pre-pass
   --format <text|json>       Output format (default: text)
   --verbose                  Print progress to stderr
+
+Environment:
+  FC_MAX_TURNS, FC_MAX_COMMANDS, FC_TIMEOUT_MS, FC_REPO_MAP_MODE,
+  FC_BOOTSTRAP_ENABLED, FC_BOOTSTRAP_TREE_DEPTH, FC_BOOTSTRAP_MAX_TURNS,
+  FC_BOOTSTRAP_MAX_COMMANDS, FC_HOTSPOT_TOP_K, FC_HOTSPOT_TREE_DEPTH,
+  FC_HOTSPOT_MAX_BYTES, FC_INCLUDE_SNIPPETS, FAST_CONTEXT_DEBUG
 
 `)
 }

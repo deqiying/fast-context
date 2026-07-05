@@ -61,7 +61,7 @@ func defaultHTTPClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-func (c *Client) FetchJWT(ctx context.Context, apiKey string) (string, error) {
+func (c *Client) FetchJWT(ctx context.Context, apiKey string, timeout time.Duration) (string, error) {
 	meta := &protowire.Encoder{}
 	meta.String(1, wsApp)
 	meta.String(2, envDefault("WS_APP_VER", wsAppVer))
@@ -73,7 +73,7 @@ func (c *Client) FetchJWT(ctx context.Context, apiKey string) (string, error) {
 
 	outer := &protowire.Encoder{}
 	outer.Message(1, meta)
-	resp, err := c.unary(ctx, c.authBase+"/GetUserJwt", outer.BytesValue(), false, 30*time.Second)
+	resp, err := c.unary(ctx, c.authBase+"/GetUserJwt", outer.BytesValue(), false, normalizeTimeout(timeout))
 	if err != nil {
 		return "", err
 	}
@@ -85,11 +85,11 @@ func (c *Client) FetchJWT(ctx context.Context, apiKey string) (string, error) {
 	return "", &Error{code: "PROTOCOL", err: errors.New("failed to extract JWT from GetUserJwt response")}
 }
 
-func (c *Client) CheckRateLimit(ctx context.Context, apiKey, jwt string) (bool, error) {
+func (c *Client) CheckRateLimit(ctx context.Context, apiKey, jwt string, timeout time.Duration) (bool, error) {
 	req := &protowire.Encoder{}
 	req.Message(1, buildMetadata(apiKey, jwt))
 	req.String(3, envDefault("WS_MODEL", wsModel))
-	_, err := c.unary(ctx, c.apiBase+"/CheckUserMessageRateLimit", req.BytesValue(), true, 30*time.Second)
+	_, err := c.unary(ctx, c.apiBase+"/CheckUserMessageRateLimit", req.BytesValue(), true, normalizeTimeout(timeout))
 	if err == nil {
 		return true, nil
 	}
@@ -311,6 +311,13 @@ func classify(err error, status int) error {
 		code = "TIMEOUT"
 	}
 	return &Error{code: code, err: err}
+}
+
+func normalizeTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return 30 * time.Second
+	}
+	return timeout
 }
 
 func envDefault(name, fallback string) string {

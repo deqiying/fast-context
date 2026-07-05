@@ -1,0 +1,23 @@
+# Binaries
+fast-context
+fast-context.exe
+/bin/
+/dist/
+
+# Go build/test artifacts
+*.test
+*.out
+coverage.*
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env / secrets
+.env
+*.local

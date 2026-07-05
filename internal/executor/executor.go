@@ -23,6 +23,8 @@ const (
 	defaultLineMaxChars   = 250
 )
 
+var commandKeyRe = regexp.MustCompile(`^command\d+$`)
+
 type Command struct {
 	Type       string   `json:"type"`
 	Pattern    string   `json:"pattern,omitempty"`
@@ -81,11 +83,15 @@ func (e *Executor) ExecToolCall(ctx context.Context, args map[string]Command) st
 	}
 	keys := make([]string, 0, len(args))
 	for key := range args {
-		if strings.HasPrefix(key, "command") {
+		if commandKeyRe.MatchString(key) {
 			keys = append(keys, key)
 		}
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := strconv.Atoi(keys[i][len("command"):])
+		b, _ := strconv.Atoi(keys[j][len("command"):])
+		return a < b
+	})
 	if len(keys) == 0 {
 		return "Error: missing commandN entries"
 	}
@@ -155,13 +161,16 @@ func (e *Executor) RG(ctx context.Context, pattern, virtualPath string, include,
 		return fmt.Sprintf("Error: path does not exist: %s", virtualPath)
 	}
 
-	args := []string{"--no-heading", "-n", "--max-count", "50", pattern, realPath}
+	args := []string{"--no-heading", "-n", "--max-count", "50"}
 	for _, g := range include {
 		args = append(args, "--glob", g)
 	}
 	for _, g := range exclude {
-		args = append(args, "--glob", "!"+g)
+		for _, ex := range expandExcludeGlobs(g) {
+			args = append(args, "--glob", "!"+ex)
+		}
 	}
+	args = append(args, "--", pattern, realPath)
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -496,6 +505,20 @@ func filteredEnv(env []string, removedKey string) []string {
 	}
 	out = append(out, removedKey+"=")
 	return out
+}
+
+// expandExcludeGlobs mirrors upstream 1.5.2: a bare pattern like "dist" also
+// excludes nested matches via "**/dist".
+func expandExcludeGlobs(pattern string) []string {
+	normalized := strings.TrimSpace(strings.ReplaceAll(pattern, "\\", "/"))
+	if normalized == "" {
+		return nil
+	}
+	expanded := []string{normalized}
+	if !strings.HasPrefix(normalized, "**/") && !strings.HasPrefix(normalized, "/") {
+		expanded = append(expanded, "**/"+normalized)
+	}
+	return expanded
 }
 
 func globMatch(str, pattern string) bool {

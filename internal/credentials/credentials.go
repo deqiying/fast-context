@@ -40,9 +40,33 @@ var tomlFields = []string{
 
 func FindAPIKey() (Info, error) {
 	if key := strings.TrimSpace(os.Getenv("WINDSURF_API_KEY")); key != "" {
+		// Upstream 1.5.2: keys look like `devin-session-token$<JWT>`; shells and
+		// TOML env loaders can eat `$eyJ...` as a variable expansion, leaving a
+		// truncated key that always yields HTTP 401. Distrust it and fall back
+		// to local extraction so the user self-heals without config changes.
+		if !LooksTruncated(key) {
+			return Info{APIKey: key, SourcePath: "WINDSURF_API_KEY", SourceType: "env"}, nil
+		}
+		if info, err := Extract(""); err == nil && info.APIKey != "" {
+			return info, nil
+		}
 		return Info{APIKey: key, SourcePath: "WINDSURF_API_KEY", SourceType: "env"}, nil
 	}
 	return Extract("")
+}
+
+// LooksTruncated reports whether a manually supplied key appears to have lost
+// its `$<JWT>` tail to shell/TOML variable expansion.
+func LooksTruncated(key string) bool {
+	k := strings.TrimSpace(key)
+	if !strings.HasPrefix(k, "devin-session-token") {
+		return false
+	}
+	dollar := strings.Index(k, "$")
+	if dollar == -1 {
+		return true
+	}
+	return !strings.HasPrefix(k[dollar+1:], "eyJ")
 }
 
 func Extract(explicitPath string) (Info, error) {
@@ -51,9 +75,12 @@ func Extract(explicitPath string) (Info, error) {
 		return Info{}, err
 	}
 
+	// Upstream 1.5.2 scans all existing sources and prefers the current
+	// devin-session-token$ credential; older keys are kept as fallback.
 	var tried []string
+	var firstUsable *Info
 	var firstExistingErr error
-	var firstInfo Info
+	var firstErrInfo Info
 	for _, src := range sources {
 		tried = append(tried, src.path)
 		if _, err := os.Stat(src.path); err != nil {
@@ -67,21 +94,38 @@ func Extract(explicitPath string) (Info, error) {
 		} else {
 			info, err = extractFromSQLite(src.path)
 		}
-		info.TriedPaths = append([]string(nil), tried...)
 		if err == nil && info.APIKey != "" {
-			return info, nil
+			if isPreferredAPIKey(info.APIKey) {
+				info.TriedPaths = append([]string(nil), tried...)
+				return info, nil
+			}
+			if firstUsable == nil {
+				snapshot := info
+				firstUsable = &snapshot
+			}
+			continue
 		}
 		if firstExistingErr == nil {
 			firstExistingErr = err
-			firstInfo = info
+			firstErrInfo = info
 		}
 	}
 
+	if firstUsable != nil {
+		firstUsable.TriedPaths = tried
+		return *firstUsable, nil
+	}
 	if firstExistingErr != nil {
-		firstInfo.TriedPaths = tried
-		return firstInfo, firstExistingErr
+		firstErrInfo.TriedPaths = tried
+		return firstErrInfo, firstExistingErr
 	}
 	return Info{TriedPaths: tried}, errors.New("Windsurf/Devin credential source not found")
+}
+
+// isPreferredAPIKey reports whether the key is a current Devin/Windsurf
+// session token (devin-session-token$<JWT>).
+func isPreferredAPIKey(key string) bool {
+	return strings.HasPrefix(key, "devin-session-token$")
 }
 
 func SourceCandidates() []string {
@@ -124,6 +168,9 @@ func credentialSources(explicitPath string) ([]source, error) {
 	return out, nil
 }
 
+// dbPathCandidates mirrors upstream 1.5.2: Windsurf was taken over by Devin
+// (same DB schema, only the app directory changed), so probe Windsurf first
+// for legacy installs, then Devin (lowercase "devin" on Linux).
 func dbPathCandidates(goos, home string, env []string) []string {
 	envMap := map[string]string{}
 	for _, item := range env {
@@ -136,8 +183,8 @@ func dbPathCandidates(goos, home string, env []string) []string {
 	case "darwin":
 		base := filepath.Join(home, "Library", "Application Support")
 		return []string{
-			filepath.Join(base, "Deviv", "User", "globalStorage", "state.vscdb"),
 			filepath.Join(base, "Windsurf", "User", "globalStorage", "state.vscdb"),
+			filepath.Join(base, "Devin", "User", "globalStorage", "state.vscdb"),
 		}
 	case "windows":
 		appData := envMap["APPDATA"]
@@ -145,8 +192,8 @@ func dbPathCandidates(goos, home string, env []string) []string {
 			appData = filepath.Join(home, "AppData", "Roaming")
 		}
 		return []string{
-			filepath.Join(appData, "Deviv", "User", "globalStorage", "state.vscdb"),
 			filepath.Join(appData, "Windsurf", "User", "globalStorage", "state.vscdb"),
+			filepath.Join(appData, "Devin", "User", "globalStorage", "state.vscdb"),
 		}
 	default:
 		configDir := envMap["XDG_CONFIG_HOME"]
@@ -154,8 +201,8 @@ func dbPathCandidates(goos, home string, env []string) []string {
 			configDir = filepath.Join(home, ".config")
 		}
 		return []string{
-			filepath.Join(configDir, "Deviv", "User", "globalStorage", "state.vscdb"),
 			filepath.Join(configDir, "Windsurf", "User", "globalStorage", "state.vscdb"),
+			filepath.Join(configDir, "devin", "User", "globalStorage", "state.vscdb"),
 		}
 	}
 }

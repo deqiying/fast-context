@@ -15,9 +15,34 @@ type Map struct {
 	Depth     int
 	SizeBytes int
 	FellBack  bool
+	AutoDepth bool
 }
 
+// SuggestTreeDepth mirrors upstream _suggestTreeDepth: pick a depth from the
+// number of top-level entries (<500 → 4, ≤5000 → 3, >5000 → 2).
+func SuggestTreeDepth(projectRoot string) int {
+	entries, err := os.ReadDir(projectRoot)
+	if err != nil {
+		return 3
+	}
+	count := len(entries)
+	switch {
+	case count < 500:
+		return 4
+	case count <= 5000:
+		return 3
+	default:
+		return 2
+	}
+}
+
+// Build renders the project tree with adaptive depth fallback. targetDepth 0
+// means auto depth based on project size.
 func Build(projectRoot string, targetDepth int, excludePaths []string) Map {
+	autoDepth := targetDepth == 0
+	if autoDepth {
+		targetDepth = SuggestTreeDepth(projectRoot)
+	}
 	if targetDepth < 1 {
 		targetDepth = 1
 	}
@@ -26,7 +51,9 @@ func Build(projectRoot string, targetDepth int, excludePaths []string) Map {
 	}
 	root, err := filepath.Abs(projectRoot)
 	if err != nil {
-		return fallback(projectRoot, excludePaths)
+		m := fallback(projectRoot, excludePaths)
+		m.AutoDepth = autoDepth
+		return m
 	}
 	excludes := compileExcludes(excludePaths)
 	for depth := targetDepth; depth >= 1; depth-- {
@@ -34,12 +61,46 @@ func Build(projectRoot string, targetDepth int, excludePaths []string) Map {
 		if err != nil {
 			continue
 		}
-		size := len([]byte(tree))
+		size := len(tree)
 		if size <= MaxTreeBytes {
-			return Map{Tree: tree, Depth: depth, SizeBytes: size, FellBack: depth < targetDepth}
+			return Map{Tree: tree, Depth: depth, SizeBytes: size, FellBack: depth < targetDepth, AutoDepth: autoDepth}
 		}
 	}
-	return fallback(root, excludePaths)
+	m := fallback(root, excludePaths)
+	m.AutoDepth = autoDepth
+	return m
+}
+
+// BuildSubtree renders a hotspot subtree rooted at /codebase/<dir>.
+func BuildSubtree(projectRoot, dir string, levels int) string {
+	abs := filepath.Join(projectRoot, dir)
+	vroot := "/codebase/" + filepath.ToSlash(dir)
+	tree, err := renderTree(abs, vroot, levels, nil)
+	if err != nil {
+		return vroot + "\n  (failed to generate subtree)"
+	}
+	return tree
+}
+
+// ListTopLevelDirs returns non-excluded top-level directory names, sorted.
+func ListTopLevelDirs(projectRoot string, excludePaths []string) []string {
+	excludes := compileExcludes(excludePaths)
+	entries, err := os.ReadDir(projectRoot)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if matchesExclude(excludes, entry.Name(), entry.Name()) {
+			continue
+		}
+		out = append(out, entry.Name())
+	}
+	sort.Strings(out)
+	return out
 }
 
 func fallback(projectRoot string, excludePaths []string) Map {
@@ -47,7 +108,7 @@ func fallback(projectRoot string, excludePaths []string) Map {
 	entries, err := os.ReadDir(projectRoot)
 	if err != nil {
 		tree := "/codebase\n(empty or inaccessible)"
-		return Map{Tree: tree, Depth: 0, SizeBytes: len([]byte(tree)), FellBack: true}
+		return Map{Tree: tree, Depth: 0, SizeBytes: len(tree), FellBack: true}
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
@@ -65,7 +126,7 @@ func fallback(projectRoot string, excludePaths []string) Map {
 		b.WriteString(name)
 	}
 	tree := b.String()
-	return Map{Tree: tree, Depth: 0, SizeBytes: len([]byte(tree)), FellBack: true}
+	return Map{Tree: tree, Depth: 0, SizeBytes: len(tree), FellBack: true}
 }
 
 func renderTree(root, displayRoot string, maxDepth int, excludes []excludePattern) (string, error) {
@@ -86,7 +147,14 @@ func writeTree(b *strings.Builder, root, dir, prefix string, depth, maxDepth int
 	if err != nil {
 		return err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	// Upstream tree.mjs sorts directories first, then by name.
+	sort.Slice(entries, func(i, j int) bool {
+		iDir, jDir := entries[i].IsDir(), entries[j].IsDir()
+		if iDir != jDir {
+			return iDir
+		}
+		return entries[i].Name() < entries[j].Name()
+	})
 	filtered := make([]os.DirEntry, 0, len(entries))
 	for _, entry := range entries {
 		rel, err := filepath.Rel(root, filepath.Join(dir, entry.Name()))
