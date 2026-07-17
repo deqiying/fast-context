@@ -1,9 +1,16 @@
+param(
+    [Parameter(Position = 0)]
+    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')]
+    [string]$Version
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $versionFile = Join-Path $PSScriptRoot "version"
 $versionPattern = '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+$versionWasProvided = $PSBoundParameters.ContainsKey("Version")
 
 function Invoke-Checked {
     param(
@@ -36,13 +43,61 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Get-ReleaseCommitMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+
+    # Keep the script literal ASCII-safe for Windows PowerShell 5.1.
+    $releasePrefix = [string]::Concat([char]0x53D1, [char]0x5E03)
+    return "$releasePrefix $Version"
+}
+
+function Invoke-GitCommitWithUtf8Message {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $messageFile = [System.IO.Path]::GetTempFileName()
+    try {
+        Write-Utf8NoBom -Path $messageFile -Content ($Message + "`n")
+        Invoke-Checked -FilePath "git" -Arguments @("commit", "-F", $messageFile)
+    }
+    finally {
+        Remove-Item -LiteralPath $messageFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Update-JsonStringProperty {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content,
+        [Parameter(Mandatory = $true)][string]$PropertyName,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $escapedPropertyName = [regex]::Escape($PropertyName)
+    $regex = [regex]('(?m)^(\s*"' + $escapedPropertyName + '"\s*:\s*")([^"]*)(")')
+    $matches = $regex.Matches($Content)
+    if ($matches.Count -ne 1) {
+        throw "Expected exactly one $PropertyName property in $Path"
+    }
+
+    return $regex.Replace(
+        $Content,
+        { param($match) $match.Groups[1].Value + $Value + $match.Groups[3].Value },
+        1
+    )
+}
+
 function Update-PackageVersion {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Version
     )
-    $package = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    $package.version = $Version
+    $content = Get-Content -LiteralPath $Path -Raw
+    $package = $content | ConvertFrom-Json
+    $content = Update-JsonStringProperty -Content $content -PropertyName "version" -Value $Version -Path $Path
     if ($package.name -eq "@deqiying/fast-context") {
         foreach ($name in @(
             "@deqiying/fast-context-win32-x64",
@@ -53,20 +108,25 @@ function Update-PackageVersion {
             if ($null -eq $property) {
                 throw "Missing optional dependency $name in $Path"
             }
-            $property.Value = $Version
+            $content = Update-JsonStringProperty -Content $content -PropertyName $name -Value $Version -Path $Path
         }
     }
-    return ($package | ConvertTo-Json -Depth 20) + [Environment]::NewLine
+    return $content
 }
 
 if (-not (Test-Path -LiteralPath $versionFile)) {
     throw "Missing .deploy/version"
 }
-$version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
-if ($version -notmatch $versionPattern) {
-    throw ".deploy/version must contain a valid SemVer value"
+$releaseVersion = if ($versionWasProvided) {
+    $Version
 }
-$tagName = "v$version"
+else {
+    (Get-Content -LiteralPath $versionFile -Raw).Trim()
+}
+if ($releaseVersion -notmatch $versionPattern) {
+    throw "Release version must be a valid SemVer value"
+}
+$tagName = "v$releaseVersion"
 
 Push-Location $repoRoot
 try {
@@ -99,12 +159,16 @@ try {
         throw "Tag $tagName already exists"
     }
 
+    if ($versionWasProvided) {
+        Write-Utf8NoBom -Path $versionFile -Content ($releaseVersion + "`n")
+    }
+
     foreach ($path in $versionFiles) {
         if ($path -eq ".deploy/version") {
             continue
         }
         $fullPath = Join-Path $repoRoot $path
-        Write-Utf8NoBom -Path $fullPath -Content (Update-PackageVersion -Path $fullPath -Version $version)
+        Write-Utf8NoBom -Path $fullPath -Content (Update-PackageVersion -Path $fullPath -Version $releaseVersion)
     }
 
     Invoke-Checked -FilePath "git" -Arguments (@("add", "--") + $versionFiles)
@@ -113,7 +177,8 @@ try {
         throw "git diff failed with exit code $LASTEXITCODE"
     }
     if ($LASTEXITCODE -eq 1) {
-        Invoke-Checked -FilePath "git" -Arguments @("commit", "-m", "发布 $version")
+        $commitMessage = Get-ReleaseCommitMessage -Version $releaseVersion
+        Invoke-GitCommitWithUtf8Message -Message $commitMessage
     }
     else {
         Write-Host "No version changes detected; tagging current HEAD."

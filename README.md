@@ -115,7 +115,13 @@ pwsh ./scripts/package-npm.ps1
 
 `scripts/package-npm.ps1` writes ignored artifacts under `dist/`; it never runs `npm publish`.
 
-`.deploy/version` is the single release version input. After all tests and external ownership checks pass, `.deploy/release-version.ps1` updates package versions, stages only version files, creates a local release commit and tag, and does not push or publish.
+`.deploy/version` is the single release version source. After all tests and external ownership checks pass, prepare a new version directly with:
+
+```powershell
+pwsh ./.deploy/release-version.ps1 0.1.0-alpha.2
+```
+
+The positional argument updates `.deploy/version`, synchronizes all package versions, stages only version files, and creates a local release commit and tag. Omit the argument to use a version already written to `.deploy/version`. The script never pushes or publishes.
 
 ## npm publishing boundary
 
