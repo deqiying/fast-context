@@ -35,7 +35,7 @@ mise -> Node/npm -> fast-context
 
 Use `npm prefix --global`, `npm list --global --depth=0`, and direct command resolution to diagnose installation. Do not treat `mise which fast-context` as decisive for an npm-global package.
 
-Ask for authorization before the first global install. Use `npm install -g @deqiying/fast-context@next` for prerelease validation and `npm install -g @deqiying/fast-context@latest` after a stable release exists.
+Ask for authorization before the first global install. Alpha releases intentionally use the default `latest` channel, so install with `npm install -g @deqiying/fast-context`. Pin an exact version when reproducibility is required.
 
 ## Run the local preflight
 

@@ -31,10 +31,12 @@ fast-context --version
 Install only after the user authorizes a global change:
 
 ```powershell
-npm install -g @deqiying/fast-context@next
-# After a stable release exists:
-npm install -g @deqiying/fast-context@latest
+npm install -g @deqiying/fast-context
+# Pin an exact Alpha when reproducibility is required:
+npm install -g @deqiying/fast-context@0.1.0-alpha.1
 ```
+
+Alpha releases intentionally use the default `latest` channel until the stable-release gate is met.
 
 ## Commands
 

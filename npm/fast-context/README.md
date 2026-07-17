@@ -4,14 +4,14 @@
 
 ## Install
 
-Prerelease channel:
+Alpha releases are intentionally available through the default installation channel:
 
 ```sh
-npm install -g @deqiying/fast-context@next
+npm install -g @deqiying/fast-context
 fast-context --version
 ```
 
-After a stable release exists, use `@deqiying/fast-context@latest`.
+`@deqiying/fast-context@latest` is equivalent. Pin an exact version when reproducibility is required; `latest` may point to an Alpha until the stable-release gate is met.
 
 Supported npm platforms:
 

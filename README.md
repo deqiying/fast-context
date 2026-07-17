@@ -6,14 +6,14 @@ The CLI keeps semantic search, credential discovery, restricted local tools, str
 
 ## Install
 
-The scoped `0.1.0-alpha.0` bootstrap is published for the entry package and all three platform packages. An isolated registry install of the `next` channel, `fast-context --version`, and `doctor` has passed on Windows. Install the prerelease channel with:
+Alpha releases intentionally use `latest` as the default installation channel while the CLI is being validated. The scoped `0.1.0-alpha.0` bootstrap has passed an isolated registry install, `fast-context --version`, and `doctor` on Windows. Install the current Alpha with:
 
 ```powershell
-npm install -g @deqiying/fast-context@next
+npm install -g @deqiying/fast-context
 fast-context --version
 ```
 
-Do not use `@latest` as the stable channel yet. The registry currently also has `latest` pointing to the bootstrap prerelease; that tag must be removed before stable-release guidance is enabled.
+`@deqiying/fast-context@latest` is equivalent. Pin an exact version when reproducibility is required; `latest` may point to an Alpha until the stable-release gate is met.
 
 Supported npm targets:
 
@@ -119,9 +119,9 @@ pwsh ./scripts/package-npm.ps1
 
 ## npm publishing boundary
 
-The registry rejected the unscoped `fast-context` name because it is too similar to the existing `fastcontext` package, so the entry package is `@deqiying/fast-context`. The four scoped `0.1.0-alpha.0` packages have completed the manual bootstrap and are installable through `next`.
+The registry rejected the unscoped `fast-context` name because it is too similar to the existing `fastcontext` package, so the entry package is `@deqiying/fast-context`. The four scoped `0.1.0-alpha.0` packages have completed the manual bootstrap and are installable through the default `latest` channel.
 
-The published bootstrap binary reports a dirty-worktree commit, and npm versions are immutable. Treat `alpha.0` only as package-name bootstrap evidence: do not create a retroactive Git tag that would falsely imply source alignment. Configure the same `.github/workflows/release.yml` Trusted Publisher for all four packages, remove the accidental prerelease `latest` tags with explicit owner approval, and publish a clean `0.1.0-alpha.1` through OIDC to establish package, Git tag, GitHub Release, and binary-version alignment.
+The published bootstrap binary reports a dirty-worktree commit, and npm versions are immutable. Treat `alpha.0` only as package-name bootstrap evidence: do not create a retroactive Git tag that would falsely imply source alignment. The same `.github/workflows/release.yml` Trusted Publisher is configured for all four packages. Publishing a clean `0.1.0-alpha.1` through OIDC replaces the default Alpha and establishes package, Git tag, GitHub Release, and binary-version alignment.
 
 The GitHub workflow uses GitHub-hosted runners, Node 24, npm 11, job-scoped `id-token: write`, immutable package versions, pack audits, and SHA256 checksums. It skips an already published identical version rather than attempting to overwrite it.
 

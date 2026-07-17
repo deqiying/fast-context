@@ -357,10 +357,8 @@ jobs:
           set -euo pipefail
 
           version="${{ needs.test.outputs.release_version }}"
+          # Alpha releases are intentionally the default installation channel.
           dist_tag="latest"
-          if [[ "${version}" == *-* ]]; then
-            dist_tag="next"
-          fi
 
           publish_if_missing() {
             local package_name="$1"

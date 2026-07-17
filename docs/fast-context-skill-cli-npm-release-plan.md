@@ -100,7 +100,7 @@ CLI/Skill 契约稳定
 | D6 | 项目内只维护一个 `fast-context` 主 Skill | 当前能力边界单一，不需要 `onesearch` 式 provider/workflow Skill 拆分 |
 | D7 | CLI 内嵌完整 Skill，Codex 插件只保留薄主入口 | CLI 是命令契约的版本化事实源，插件只负责触发与安装指引 |
 | D8 | 首次引导发布与后续 OIDC 发布分开 | npm Trusted Publisher 只能为已存在的包配置，不能直接完成首次占名 |
-| D9 | prerelease 使用 npm dist-tag `next`，稳定版才使用 `latest` | 避免未完成真实使用验证的版本覆盖稳定安装入口 |
+| D9 | Alpha 阶段使用 npm dist-tag `latest` 作为默认安装渠道 | 当前接受默认安装 Alpha；稳定版仍沿用 `latest`，需要可复现安装时显式固定版本 |
 
 ## 6. 总体架构
 
@@ -307,7 +307,7 @@ Skill 名称固定为 `fast-context`。frontmatter 只包含 `name` 和 `descrip
 1. 使用 `Get-Command fast-context -All` 或等价命令确认实际 CLI。
 2. 运行 `fast-context --version` 验证入口和版本。
 3. CLI 缺失时说明 npm 是直接安装/更新 owner；首次全局安装前取得用户授权。
-4. 获得授权后安装并验证版本；预发布验证使用 `npm install -g @deqiying/fast-context@next`，稳定版发布后使用 `npm install -g @deqiying/fast-context@latest`。
+4. 获得授权后安装并验证版本；Alpha 与稳定版都使用默认的 `npm install -g @deqiying/fast-context`，需要可复现安装时显式固定版本。
 5. 运行 `fast-context doctor --format json` 检查项目、凭据和 `ripgrep`。
 6. 在外部传输边界允许时运行 `search`；默认不加 `--include-snippets`。
 7. 使用返回的文件、行号和 grep keywords 做本地确定性复核。
@@ -488,7 +488,7 @@ npm Trusted Publisher 要求包已经存在，因此采用两阶段发布：
 - `@deqiying/fast-context` 与三个 scoped 平台包均已发布 `0.1.0-alpha.0`。
 - 从公开 registry 安装 `@deqiying/fast-context@next` 后，`--version`、`doctor` 和内置 `ripgrep` 检查已通过。
 - 已发布二进制的版本元数据包含 `-dirty`。npm 已发布版本不可覆盖，因此 `alpha.0` 只作为首次占包和安装链路验证，不补建会造成错误对齐印象的 `v0.1.0-alpha.0` Git tag。
-- 当前 registry 还显示四个包的 `latest` 均指向该 prerelease。该外部 dist-tag 清理需包 owner 明确授权；正式 prerelease 仍只以 `next` 为目标渠道。
+- 当前 registry 显示四个包的 `latest` 均指向该 prerelease。经 owner 确认，Alpha 可作为默认安装版本，因此保留 `latest`，由干净的 `alpha.1` OIDC 发布自动替换默认 Alpha。
 - 下一次可审计发布使用干净提交和 `0.1.0-alpha.1`，通过 Trusted Publisher/OIDC 建立 npm package、Git tag、GitHub Release 与二进制版本的一致性。
 
 #### 正式 prerelease 流程
@@ -496,8 +496,9 @@ npm Trusted Publisher 要求包已经存在，因此采用两阶段发布：
 1. 将版本更新为 `0.1.0-alpha.1`。
 2. 创建并 push `v0.1.0-alpha.1`。
 3. workflow 使用 OIDC 发布并自动生成 provenance。
-4. prerelease 继续使用 dist-tag `next`。
-5. 完成 Agent 迁移和真实任务验证后，再发布不带 prerelease 后缀的版本并切换 `latest`。
+4. Alpha 使用 dist-tag `latest`，允许无 tag 的默认安装获得当前 Alpha。
+5. 发布后将 bootstrap 遗留的 `next` alias 对齐到 `alpha.1` 或移除，避免继续指向 dirty 的 `alpha.0`。
+6. 完成 Agent 迁移和真实任务验证后，再发布不带 prerelease 后缀的稳定版本；默认渠道仍为 `latest`。
 
 发布 job 需要处理平台包已发布、入口包未发布的部分失败场景。对已存在的同版本包只能安全跳过，禁止覆盖或复用同一个版本号生成不同 tarball。
 
@@ -668,11 +669,12 @@ plugins/codex/tool-skills/
 **工作内容**
 
 - [x] 发布四个 scoped `0.1.0-alpha.0` 引导包并完成 registry 安装 smoke。
-- [ ] 为四个包配置 Trusted Publisher，并清理意外指向 prerelease 的 `latest` dist-tag。
-- [ ] 通过 OIDC 发布干净的 `0.1.0-alpha.1`。
+- [x] 为四个包配置 Trusted Publisher，并确认 Alpha 使用 `latest` 默认渠道。
+- [ ] 通过 OIDC 发布干净的 `0.1.0-alpha.1` 并更新 `latest`。
+- [ ] 对齐或移除 bootstrap 遗留的 `next` alias。
 - [ ] 在公开 fixture 仓库执行经授权的真实 Windsurf E2E。
 - [ ] 根据使用结果发布 patch prerelease。
-- [ ] 满足稳定版门槛后发布 `latest`。
+- [ ] 满足稳定版门槛后发布无 prerelease 后缀的稳定版本。
 
 **退出条件**
 
@@ -800,7 +802,7 @@ plugins/codex/tool-skills/
 
 - npm 已发布版本不覆盖、不复用。
 - 有缺陷版本使用 `npm deprecate` 标记，并发布修复版本。
-- prerelease 保持在 `next`，不影响 `latest`。
+- Alpha 按已确认策略使用 `latest`；有缺陷版本不覆盖，发布修复版本让默认 tag 前移。
 - 入口包发布失败但平台包已发布时，修复后继续发布同版本入口包；不得重发已存在平台包。
 
 ### 18.2 GitHub Release
