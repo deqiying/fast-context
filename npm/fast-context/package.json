@@ -1,0 +1,39 @@
+{
+  "name": "@deqiying/fast-context",
+  "version": "0.1.0-alpha.0",
+  "description": "Semantic local-code discovery CLI for AI agents and terminal users.",
+  "license": "MIT",
+  "bin": {
+    "fast-context": "bin/fast-context.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deqiying/fast-context.git"
+  },
+  "bugs": {
+    "url": "https://github.com/deqiying/fast-context/issues"
+  },
+  "homepage": "https://github.com/deqiying/fast-context#readme",
+  "dependencies": {
+    "@vscode/ripgrep": "1.18.0"
+  },
+  "optionalDependencies": {
+    "@deqiying/fast-context-darwin-arm64": "0.1.0-alpha.0",
+    "@deqiying/fast-context-linux-x64": "0.1.0-alpha.0",
+    "@deqiying/fast-context-win32-x64": "0.1.0-alpha.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

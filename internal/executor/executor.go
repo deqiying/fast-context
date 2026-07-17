@@ -64,17 +64,24 @@ func New(projectRoot string) (*Executor, error) {
 }
 
 func FindRipgrep() (string, error) {
+	path, _, err := FindRipgrepWithSource()
+	return path, err
+}
+
+// FindRipgrepWithSource resolves ripgrep and reports which supported lookup
+// path selected it. The source values form part of the doctor JSON contract.
+func FindRipgrepWithSource() (path, source string, err error) {
 	if configured := strings.TrimSpace(os.Getenv("FC_RG_PATH")); configured != "" {
 		if st, err := os.Stat(configured); err == nil && !st.IsDir() {
-			return configured, nil
+			return configured, "fc_rg_path", nil
 		}
-		return "", fmt.Errorf("FC_RG_PATH is not executable: %s", configured)
+		return "", "fc_rg_path", fmt.Errorf("FC_RG_PATH is not executable: %s", configured)
 	}
-	path, err := exec.LookPath("rg")
+	path, err = exec.LookPath("rg")
 	if err != nil {
-		return "", errors.New("rg not found in PATH; install ripgrep or set FC_RG_PATH")
+		return "", "path", errors.New("rg not found in PATH; install ripgrep or set FC_RG_PATH")
 	}
-	return path, nil
+	return path, "path", nil
 }
 
 func (e *Executor) ExecToolCall(ctx context.Context, args map[string]Command) string {

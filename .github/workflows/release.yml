@@ -1,0 +1,417 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and release preflight
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.version.outputs.release_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup declared Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Use an OIDC-compatible npm CLI
+        run: npm install --global npm@11
+
+      - name: Verify release version and package manifests
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_version="$(tr -d '\r\n' < .deploy/version)"
+          if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid .deploy/version: ${release_version}" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME#v}" != "${release_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match ${release_version}" >&2
+            exit 1
+          fi
+
+          RELEASE_VERSION="${release_version}" node <<'NODE'
+          const fs = require("node:fs");
+          const version = process.env.RELEASE_VERSION;
+          const files = [
+            "npm/fast-context/package.json",
+            "npm/packages/win32-x64/package.json",
+            "npm/packages/linux-x64/package.json",
+            "npm/packages/darwin-arm64/package.json",
+          ];
+          const packages = files.map((file) => [file, JSON.parse(fs.readFileSync(file, "utf8"))]);
+          for (const [file, pkg] of packages) {
+            if (pkg.version !== version) {
+              throw new Error(`${file} version ${pkg.version} does not match ${version}`);
+            }
+            if (pkg.license !== "MIT") {
+              throw new Error(`${file} must use MIT`);
+            }
+            if (pkg.repository?.url !== "git+https://github.com/deqiying/fast-context.git") {
+              throw new Error(`${file} repository.url does not match the publishing repository`);
+            }
+          }
+          const entry = packages[0][1];
+          if (entry.name !== "@deqiying/fast-context") {
+            throw new Error(`unexpected entry package name ${entry.name}`);
+          }
+          if (entry.dependencies["@vscode/ripgrep"] !== "1.18.0") {
+            throw new Error("@vscode/ripgrep must be pinned to 1.18.0");
+          }
+          for (const [, pkg] of packages.slice(1)) {
+            if (entry.optionalDependencies[pkg.name] !== version) {
+              throw new Error(`optional dependency ${pkg.name} does not match ${version}`);
+            }
+          }
+          NODE
+
+          npm_version="$(npm --version)"
+          node -e 'const [major, minor] = process.argv[1].split(".").map(Number); if (major < 11 || (major === 11 && minor < 5)) process.exit(1)' "${npm_version}"
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Test with declared Go toolchain
+        run: |
+          go version
+          go test ./...
+          go vet ./...
+
+      - name: Test launcher
+        run: node --test npm/fast-context/test/*.test.js
+
+      - name: Setup current stable Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+
+      - name: Test with current stable Go
+        run: |
+          go version
+          go test ./...
+
+  binary-build:
+    name: Build release binary ${{ matrix.id }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-amd64
+            goos: windows
+            goarch: amd64
+            binary_name: fast-context.exe
+            archive_ext: zip
+          - id: linux-amd64
+            goos: linux
+            goarch: amd64
+            binary_name: fast-context
+            archive_ext: tar.gz
+          - id: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            binary_name: fast-context
+            archive_ext: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build and archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.test.outputs.release_version }}"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          archive_name="fast-context_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          build_dir="dist/build/${archive_name}"
+          release_dir="dist/release"
+          mkdir -p "${build_dir}" "${release_dir}"
+          ldflags="-s -w -X github.com/deqiying/fast-context/internal/version.Version=${version} -X github.com/deqiying/fast-context/internal/version.Commit=${GITHUB_SHA} -X github.com/deqiying/fast-context/internal/version.Date=${build_date}"
+
+          CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
+            go build -trimpath -ldflags="${ldflags}" -o "${build_dir}/${{ matrix.binary_name }}" ./cmd/fast-context
+
+          cp README.md LICENSE "${build_dir}/"
+          if [[ "${{ matrix.goos }}" != "windows" ]]; then
+            chmod +x "${build_dir}/${{ matrix.binary_name }}"
+          fi
+          if [[ "${{ matrix.goos }}" == "linux" ]]; then
+            "${build_dir}/${{ matrix.binary_name }}" --version
+          fi
+
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            (cd "${build_dir}" && zip -qr "../../release/${archive_name}.zip" .)
+          else
+            tar -C "${build_dir}" -czf "${release_dir}/${archive_name}.tar.gz" .
+          fi
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.id }}
+          path: dist/release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  npm-build:
+    name: Build npm binary ${{ matrix.id }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: win32-x64
+            goos: windows
+            goarch: amd64
+            binary_name: fast-context.exe
+          - id: linux-x64
+            goos: linux
+            goarch: amd64
+            binary_name: fast-context
+          - id: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            binary_name: fast-context
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build npm binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.test.outputs.release_version }}"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          output_dir="dist/npm-bin/${{ matrix.id }}"
+          mkdir -p "${output_dir}"
+          ldflags="-s -w -X github.com/deqiying/fast-context/internal/version.Version=${version} -X github.com/deqiying/fast-context/internal/version.Commit=${GITHUB_SHA} -X github.com/deqiying/fast-context/internal/version.Date=${build_date}"
+
+          CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
+            go build -trimpath -ldflags="${ldflags}" -o "${output_dir}/${{ matrix.binary_name }}" ./cmd/fast-context
+          if [[ "${{ matrix.goos }}" == "linux" ]]; then
+            chmod +x "${output_dir}/${{ matrix.binary_name }}"
+            "${output_dir}/${{ matrix.binary_name }}" --version
+          fi
+
+      - name: Upload npm binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: npm-bin-${{ matrix.id }}
+          path: dist/npm-bin/${{ matrix.id }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  npm-smoke:
+    name: npm smoke ${{ matrix.id }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: win32-x64
+            os: windows-latest
+          - id: linux-x64
+            os: ubuntu-latest
+          - id: darwin-arm64
+            os: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Use an OIDC-compatible npm CLI
+        run: npm install --global npm@11
+
+      - name: Build, pack, install, and smoke local tarballs
+        shell: pwsh
+        run: ./scripts/package-npm.ps1
+
+      - name: Upload pack audit
+        uses: actions/upload-artifact@v6
+        with:
+          name: npm-smoke-${{ matrix.id }}
+          path: |
+            dist/npm/*.tgz
+            dist/npm/pack-results.json
+            dist/npm/checksums.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  npm-publish:
+    name: Publish npm packages
+    needs: [test, npm-build, npm-smoke]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Use an OIDC-compatible npm CLI
+        run: npm install --global npm@11
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v7
+        with:
+          name: npm-bin-win32-x64
+          path: dist/npm-prebuilt/win32-x64
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v7
+        with:
+          name: npm-bin-linux-x64
+          path: dist/npm-prebuilt/linux-x64
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@v7
+        with:
+          name: npm-bin-darwin-arm64
+          path: dist/npm-prebuilt/darwin-arm64
+
+      - name: Stage and audit publish tarballs
+        shell: pwsh
+        run: ./scripts/package-npm.ps1 -PrebuiltRoot ./dist/npm-prebuilt -SkipSmoke
+
+      - name: Upload publish audit
+        uses: actions/upload-artifact@v6
+        with:
+          name: npm-publish-audit
+          path: |
+            dist/npm/*.tgz
+            dist/npm/pack-results.json
+            dist/npm/checksums.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Publish platform packages, then entry package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.test.outputs.release_version }}"
+          dist_tag="latest"
+          if [[ "${version}" == *-* ]]; then
+            dist_tag="next"
+          fi
+
+          publish_if_missing() {
+            local package_name="$1"
+            local tarball="$2"
+            if npm view "${package_name}@${version}" version >/dev/null 2>&1; then
+              echo "${package_name}@${version} already exists; skipping immutable package."
+              return
+            fi
+            npm publish "${tarball}" --access public --tag "${dist_tag}"
+          }
+
+          publish_if_missing "@deqiying/fast-context-win32-x64" "$(find dist/npm -maxdepth 1 -name '*win32-x64*.tgz' -print -quit)"
+          publish_if_missing "@deqiying/fast-context-linux-x64" "$(find dist/npm -maxdepth 1 -name '*linux-x64*.tgz' -print -quit)"
+          publish_if_missing "@deqiying/fast-context-darwin-arm64" "$(find dist/npm -maxdepth 1 -name '*darwin-arm64*.tgz' -print -quit)"
+          publish_if_missing "@deqiying/fast-context" "$(find dist/npm -maxdepth 1 -name 'deqiying-fast-context-[0-9]*.tgz' -print -quit)"
+
+  binary-release:
+    name: Publish GitHub Release
+    needs: [binary-build, npm-publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+
+      - name: Create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist/release && sha256sum * > checksums.txt)
+
+      - name: Create immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease_args=()
+          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" dist/release/* \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Release ${GITHUB_REF_NAME}" \
+            "${prerelease_args[@]}"

@@ -97,7 +97,7 @@ func (c *Client) CheckRateLimit(ctx context.Context, apiKey, jwt string, timeout
 	if errors.As(err, &fcErr) && fcErr.Code() == "RATE_LIMITED" {
 		return false, nil
 	}
-	return true, nil
+	return false, err
 }
 
 func (c *Client) Stream(ctx context.Context, apiKey, jwt string, messages []search.Message, toolDefs string, timeout time.Duration) ([]byte, error) {
@@ -131,13 +131,14 @@ func (c *Client) Stream(ctx context.Context, apiKey, jwt string, messages []sear
 		req.Header.Set("Sentry-Trace", traceID+"-"+spanID+"-0")
 
 		resp, err := c.httpClient.Do(req)
-		cancel()
 		if err != nil {
+			cancel()
 			lastErr = classify(err, 0)
 			continue
 		}
 		body, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		cancel()
 		if readErr != nil {
 			return nil, classify(readErr, 0)
 		}
@@ -146,7 +147,9 @@ func (c *Client) Stream(ctx context.Context, apiKey, jwt string, messages []sear
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 				return nil, lastErr
 			}
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+			}
 			continue
 		}
 		return body, nil

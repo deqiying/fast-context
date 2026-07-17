@@ -30,14 +30,19 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "-h", "--help", "help":
 		printRootHelp(stdout)
 		return 0
+	case "--version", "-v":
+		printVersion(stdout)
+		return 0
 	case "search":
 		return runSearch(ctx, args[1:], stdout, stderr)
 	case "key":
 		return runKey(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "skills":
+		return runSkills(args[1:], stdout, stderr)
 	case "version":
-		fmt.Fprintf(stdout, "fast-context %s (%s, %s)\n", version.Version, version.Commit, version.Date)
+		printVersion(stdout)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
@@ -339,17 +344,22 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	absProject, projectErr := filepath.Abs(project)
-	rgPath, rgErr := executor.FindRipgrep()
+	rgPath, rgSource, rgErr := executor.FindRipgrepWithSource()
 	keyInfo, keyErr := credentials.FindAPIKey()
+	projectOK := projectErr == nil && dirExists(absProject)
+	rgOK := rgErr == nil
+	credentialsOK := keyErr == nil
 	report := map[string]any{
+		"ok": projectOK && rgOK && credentialsOK,
 		"project": map[string]any{
 			"path":   absProject,
-			"exists": projectErr == nil && dirExists(absProject),
+			"exists": projectOK,
 		},
 		"ripgrep": map[string]any{
-			"ok":    rgErr == nil,
-			"path":  rgPath,
-			"error": errorString(rgErr),
+			"ok":     rgOK,
+			"path":   rgPath,
+			"source": rgSource,
+			"error":  errorString(rgErr),
 		},
 		"credentials": map[string]any{
 			"ok":          keyErr == nil,
@@ -374,7 +384,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "fast-context doctor\n\n")
 	fmt.Fprintf(stdout, "project: %s\n", absProject)
-	fmt.Fprintf(stdout, "project_exists: %t\n", projectErr == nil && dirExists(absProject))
+	fmt.Fprintf(stdout, "project_exists: %t\n", projectOK)
 	if rgErr == nil {
 		fmt.Fprintf(stdout, "ripgrep: ok (%s)\n", rgPath)
 	} else {
@@ -429,6 +439,10 @@ func usageError(stderr io.Writer, msg string) int {
 	return 2
 }
 
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "fast-context %s (%s, %s)\n", version.Version, version.Commit, version.Date)
+}
+
 func printRootHelp(w io.Writer) {
 	fmt.Fprint(w, `fast-context is a CLI version of the fast-context MCP code search tool.
 
@@ -436,7 +450,11 @@ Usage:
   fast-context search <query> [flags]
   fast-context key extract [flags]
   fast-context doctor [flags]
+  fast-context skills list [flags]
+  fast-context skills show <skill> [flags]
   fast-context version
+  fast-context --version
+  fast-context -v
 
 `)
 }

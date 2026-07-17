@@ -1,0 +1,23 @@
+{
+  "name": "@deqiying/fast-context-win32-x64",
+  "version": "0.1.0-alpha.0",
+  "description": "Windows x64 binary for fast-context.",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deqiying/fast-context.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

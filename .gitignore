@@ -1,10 +1,11 @@
 # Binaries
-fast-context
-fast-context.exe
+/fast-context
+/fast-context.exe
 /bin/
 /dist/
 
 # Go build/test artifacts
+/.cache/
 *.test
 *.out
 coverage.*

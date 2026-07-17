@@ -8,6 +8,22 @@ import (
 	"testing"
 )
 
+func TestFindRipgrepReportsConfiguredSource(t *testing.T) {
+	rgPath := filepath.Join(t.TempDir(), "rg-fixture")
+	if err := os.WriteFile(rgPath, []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FC_RG_PATH", rgPath)
+
+	path, source, err := FindRipgrepWithSource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != rgPath || source != "fc_rg_path" {
+		t.Fatalf("path=%q source=%q", path, source)
+	}
+}
+
 func TestReadFileAndPathEscape(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "internal"), 0o755); err != nil {
