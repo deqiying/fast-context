@@ -1,6 +1,6 @@
 {
   "name": "@deqiying/fast-context-darwin-arm64",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "macOS arm64 binary for fast-context.",
   "license": "MIT",
   "os": [

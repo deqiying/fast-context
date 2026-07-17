@@ -1,6 +1,6 @@
 {
   "name": "@deqiying/fast-context-linux-x64",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Linux x64 binary for fast-context.",
   "license": "MIT",
   "os": [
