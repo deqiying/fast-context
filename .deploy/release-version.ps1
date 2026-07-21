@@ -189,6 +189,8 @@ try {
     $head = ((Get-CheckedOutput -FilePath "git" -Arguments @("rev-parse", "--short", "HEAD")) -join "").Trim()
     Write-Host "Prepared $tagName at $head. This script did not push or publish."
     Write-Host "Review the commit and tag, then push them explicitly when ready."
+    Write-Host "  git push origin main"
+    Write-Host "  git push origin $tagName"
 }
 finally {
     Pop-Location
