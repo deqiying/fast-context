@@ -218,7 +218,6 @@ func (c *Client) unary(ctx context.Context, url string, proto []byte, compress b
 	req.Header.Set("Content-Type", "application/proto")
 	req.Header.Set("Connect-Protocol-Version", "1")
 	req.Header.Set("User-Agent", "connect-go/1.18.1 (go1.25.5)")
-	req.Header.Set("Accept-Encoding", "gzip")
 	if compress {
 		req.Header.Set("Content-Encoding", "gzip")
 	}

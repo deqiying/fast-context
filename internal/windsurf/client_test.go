@@ -1,6 +1,8 @@
 package windsurf
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -13,6 +15,30 @@ import (
 
 	"github.com/deqiying/fast-context/internal/protowire"
 )
+
+func TestFetchJWTGzipResponse(t *testing.T) {
+	jwt := "eyJheader.payload.signature"
+	authResponse := &protowire.Encoder{}
+	authResponse.String(1, jwt)
+	compressed := gzipTestPayload(t, authResponse.BytesValue())
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/proto")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.authBase = server.URL
+	got, err := client.FetchJWT(context.Background(), "fixture-key", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != jwt {
+		t.Fatalf("FetchJWT = %q, want %q", got, jwt)
+	}
+}
 
 func TestFetchJWTAndHTTPErrorClassification(t *testing.T) {
 	jwt := "eyJheader.payload.signature"
@@ -163,4 +189,17 @@ func typedCode(err error) string {
 		return typed.Code()
 	}
 	return ""
+}
+
+func gzipTestPayload(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	writer := gzip.NewWriter(&body)
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
 }

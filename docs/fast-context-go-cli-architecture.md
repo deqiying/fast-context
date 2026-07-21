@@ -227,6 +227,8 @@ type Client interface {
 | `NETWORK` | DNS、TLS、连接失败 |
 | `PROTOCOL` | frame/protobuf/response parse 失败 |
 
+unary 响应压缩由 Go `http.Transport` 负责：调用方不得手动设置 `Accept-Encoding: gzip`，否则标准库不会透明解压 gzip 响应，压缩字节会被误交给 protobuf 解析器。`Content-Encoding: gzip` 仅在请求体确实压缩时设置；streaming path 继续使用自己的 Connect frame 压缩契约。
+
 上游 Node 代码会在 TLS 失败后自动禁用证书校验。Go 版不建议默认复制这个行为，建议改为显式 `FC_INSECURE_TLS=1` 才允许关闭校验，并在输出里明确提示。
 
 ### 6.4 本地受限工具执行
