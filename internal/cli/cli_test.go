@@ -87,7 +87,8 @@ func TestDoctorJSONIncludesAutomationFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("FC_RG_PATH", rgPath)
-	t.Setenv("WINDSURF_API_KEY", "fixture-api-key-123456")
+	t.Setenv("FAST_CONTEXT_KEY", "fixture-api-key-123456")
+	t.Setenv("WINDSURF_API_KEY", "")
 
 	code, stdout, stderr := executeForTest(t, "doctor", "--project", project, "--format", "json")
 	if code != 0 || stderr != "" {
@@ -103,14 +104,16 @@ func TestDoctorJSONIncludesAutomationFields(t *testing.T) {
 			Source string `json:"source"`
 		} `json:"ripgrep"`
 		Credentials struct {
-			OK  bool   `json:"ok"`
-			Key string `json:"key"`
+			OK         bool   `json:"ok"`
+			Source     string `json:"source"`
+			SourceType string `json:"source_type"`
+			Key        string `json:"key"`
 		} `json:"credentials"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatal(err)
 	}
-	if !report.OK || !report.Project.Exists || !report.Ripgrep.OK || report.Ripgrep.Source != "fc_rg_path" || !report.Credentials.OK {
+	if !report.OK || !report.Project.Exists || !report.Ripgrep.OK || report.Ripgrep.Source != "fc_rg_path" || !report.Credentials.OK || report.Credentials.Source != "FAST_CONTEXT_KEY" || report.Credentials.SourceType != "env" {
 		t.Fatalf("unexpected doctor report: %#v", report)
 	}
 	if strings.Contains(report.Credentials.Key, "fixture-api-key-123456") {

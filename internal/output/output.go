@@ -191,7 +191,7 @@ func FormatError(err error, opts search.Options, result search.Result) string {
 	case "PAYLOAD_TOO_LARGE", "TIMEOUT":
 		b.WriteString("[hint] Payload/timeout error. Try: reduce --tree-depth, reduce --max-turns, add --exclude, or narrow --project to a subdirectory.\n")
 	case "AUTH_ERROR":
-		b.WriteString("[hint] Authentication error. The API key may be expired or revoked. Run `fast-context key extract` or set a fresh WINDSURF_API_KEY.\n")
+		b.WriteString("[hint] Authentication error. The key may be expired or revoked. Run `fast-context doctor --format json`, set FAST_CONTEXT_KEY, or repair $HOME/.config/fast-context/config.json. WINDSURF_API_KEY and `fast-context key extract` remain compatible fallbacks.\n")
 	case "RATE_LIMITED":
 		b.WriteString("[hint] Rate limited. Wait a moment and retry.\n")
 	default:

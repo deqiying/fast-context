@@ -31,6 +31,18 @@ fast-context search "where is authentication handled" --project . --format json
 
 `search` sends the query, a repository map, and requested restricted-tool results to Windsurf. Do not use it for private code when external transmission is not authorized. Snippets are disabled by default.
 
+## Local credentials
+
+For a persistent user-level key, create `$HOME/.config/fast-context/config.json` yourself:
+
+```json
+{
+  "api_key": "your-api-key"
+}
+```
+
+The CLI does not create or rewrite this file. Runtime credentials are resolved in this order: `FAST_CONTEXT_KEY`, the JSON `api_key`, `WINDSURF_API_KEY`, then local Devin CLI/Windsurf credentials. Use `fast-context doctor --format json` to inspect the effective source; use `fast-context key extract` only to inspect the legacy local TOML/SQLite sources. Never commit the file or print a complete key in logs.
+
 ## License and origin
 
 MIT licensed. This Go implementation is derived from the behavior of [`fast-context-mcp`](https://github.com/SammySnake-d/fast-context-mcp), whose MIT notice is preserved in the repository license.

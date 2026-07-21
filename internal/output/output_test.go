@@ -51,8 +51,11 @@ func TestFormatTextIncludesCandidateEvidenceAndConfig(t *testing.T) {
 func TestErrorFormatsPreserveStableCode(t *testing.T) {
 	err := codedError{code: "AUTH_ERROR", err: errors.New("fixture authentication failure")}
 	formatted := FormatError(err, search.Options{TreeDepth: 3, MaxTurns: 3, MaxResults: 10, MaxCommands: 8, Timeout: 30 * time.Second}, search.Result{})
-	if !strings.Contains(formatted, "error_type=AUTH_ERROR") || !strings.Contains(formatted, "fast-context key extract") {
+	if !strings.Contains(formatted, "error_type=AUTH_ERROR") || !strings.Contains(formatted, "fast-context key extract") || !strings.Contains(formatted, "FAST_CONTEXT_KEY") || !strings.Contains(formatted, "config.json") {
 		t.Fatalf("unexpected formatted error:\n%s", formatted)
+	}
+	if strings.Contains(formatted, "fixture authentication failure") == false {
+		t.Fatal("formatted error should preserve the non-sensitive error message")
 	}
 
 	structured := ErrorJSON(err, search.Result{})

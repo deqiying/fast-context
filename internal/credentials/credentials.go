@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/deqiying/fast-context/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -38,8 +40,40 @@ var tomlFields = []string{
 	"token",
 }
 
+type localConfigLoader func() (config.LocalConfig, config.LocalConfigInfo, error)
+type credentialExtractor func(string) (Info, error)
+
+// FindAPIKey resolves credentials in the documented runtime order:
+// FAST_CONTEXT_KEY, fixed local config, WINDSURF_API_KEY, then local
+// Windsurf/Devin credentials.
 func FindAPIKey() (Info, error) {
-	if key := strings.TrimSpace(os.Getenv("WINDSURF_API_KEY")); key != "" {
+	return findAPIKey(os.Getenv, config.LoadLocal, Extract)
+}
+
+func findAPIKey(getenv func(string) string, loadLocal localConfigLoader, extract credentialExtractor) (Info, error) {
+	if key := strings.TrimSpace(getenv("FAST_CONTEXT_KEY")); key != "" {
+		if LooksTruncated(key) {
+			return Info{APIKey: key, SourcePath: "FAST_CONTEXT_KEY", SourceType: "env"}, errors.New("FAST_CONTEXT_KEY appears truncated; quote or escape the '$' character in the value")
+		}
+		return Info{APIKey: key, SourcePath: "FAST_CONTEXT_KEY", SourceType: "env"}, nil
+	}
+
+	localConfig, localInfo, localErr := loadLocal()
+	if localErr != nil {
+		// UserHomeDir failure has no path to report and should preserve the
+		// historical environment/local-credential fallback. Once a concrete
+		// config path exists, read/parse errors are intentionally fail-fast.
+		if localInfo.Path != "" {
+			return Info{SourcePath: localInfo.Path, SourceType: "fast_context_config"}, localErr
+		}
+	} else if key := strings.TrimSpace(localConfig.APIKey); key != "" {
+		if LooksTruncated(key) {
+			return Info{APIKey: key, SourcePath: localInfo.Path, SourceType: "fast_context_config"}, errors.New("fast-context config api_key appears truncated; repair the '$' credential value")
+		}
+		return Info{APIKey: key, SourcePath: localInfo.Path, SourceType: "fast_context_config"}, nil
+	}
+
+	if key := strings.TrimSpace(getenv("WINDSURF_API_KEY")); key != "" {
 		// Upstream 1.5.2: keys look like `devin-session-token$<JWT>`; shells and
 		// TOML env loaders can eat `$eyJ...` as a variable expansion, leaving a
 		// truncated key that always yields HTTP 401. Distrust it and fall back
@@ -47,12 +81,12 @@ func FindAPIKey() (Info, error) {
 		if !LooksTruncated(key) {
 			return Info{APIKey: key, SourcePath: "WINDSURF_API_KEY", SourceType: "env"}, nil
 		}
-		if info, err := Extract(""); err == nil && info.APIKey != "" {
+		if info, err := extract(""); err == nil && info.APIKey != "" {
 			return info, nil
 		}
 		return Info{APIKey: key, SourcePath: "WINDSURF_API_KEY", SourceType: "env"}, nil
 	}
-	return Extract("")
+	return extract("")
 }
 
 // LooksTruncated reports whether a manually supplied key appears to have lost
@@ -129,11 +163,14 @@ func isPreferredAPIKey(key string) bool {
 }
 
 func SourceCandidates() []string {
+	var out []string
+	if path, err := config.DefaultLocalPath(); err == nil {
+		out = append(out, path)
+	}
 	sources, err := credentialSources("")
 	if err != nil {
-		return nil
+		return out
 	}
-	out := make([]string, 0, len(sources))
 	for _, src := range sources {
 		out = append(out, src.path)
 	}

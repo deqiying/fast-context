@@ -456,6 +456,11 @@ Usage:
   fast-context --version
   fast-context -v
 
+Credentials:
+  FAST_CONTEXT_KEY   Explicit fast-context key (highest priority)
+  Local config       $HOME/.config/fast-context/config.json
+  WINDSURF_API_KEY   Compatibility environment variable
+
 `)
 }
 
@@ -481,7 +486,8 @@ Environment:
   FC_MAX_TURNS, FC_MAX_COMMANDS, FC_TIMEOUT_MS, FC_REPO_MAP_MODE,
   FC_BOOTSTRAP_ENABLED, FC_BOOTSTRAP_TREE_DEPTH, FC_BOOTSTRAP_MAX_TURNS,
   FC_BOOTSTRAP_MAX_COMMANDS, FC_HOTSPOT_TOP_K, FC_HOTSPOT_TREE_DEPTH,
-  FC_HOTSPOT_MAX_BYTES, FC_INCLUDE_SNIPPETS, FAST_CONTEXT_DEBUG
+  FC_HOTSPOT_MAX_BYTES, FC_INCLUDE_SNIPPETS, FAST_CONTEXT_DEBUG,
+  FAST_CONTEXT_KEY, WINDSURF_API_KEY
 
 `)
 }
@@ -494,6 +500,9 @@ Flags:
   --path <path>              Read a specific .toml or state.vscdb source
   --format <text|json>       Output format (default: text)
 
+This command extracts only local Windsurf/Devin sources. Use 'fast-context doctor'
+to inspect the effective runtime credential source and its priority.
+
 `)
 }
 
@@ -504,6 +513,9 @@ func printDoctorHelp(w io.Writer) {
 Flags:
   --project, -p <path>       Project root to inspect
   --format <text|json>       Output format (default: text)
+
+Credentials are resolved in this order: FAST_CONTEXT_KEY, local config,
+WINDSURF_API_KEY, then local Windsurf/Devin sources.
 
 `)
 }

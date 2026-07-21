@@ -109,8 +109,8 @@ internal/version/
 | 模块 | 职责 |
 | --- | --- |
 | `internal/cli` | 参数解析、子命令、退出码、用户可读错误 |
-| `internal/config` | 读取 env 和 flag，统一默认值 |
-| `internal/credentials` | `WINDSURF_API_KEY`、Devin CLI TOML、Windsurf/Devin `state.vscdb` |
+| `internal/config` | 读取 `FC_*` env 和 flag 默认值，并严格解析用户级 JSON 配置 |
+| `internal/credentials` | 按优先级解析 `FAST_CONTEXT_KEY`、本地 JSON、`WINDSURF_API_KEY`、Devin CLI TOML 和 Windsurf/Devin `state.vscdb` |
 | `internal/repomap` | 生成 `/codebase` 虚拟树，自动 depth fallback |
 | `internal/executor` | 受限本地命令执行和路径沙箱 |
 | `internal/windsurf` | 认证、JWT 缓存、rate limit 检查、流式请求 |
@@ -123,7 +123,7 @@ internal/version/
 `search` 命令执行流程：
 
 1. 解析 CLI 参数并确定 `projectRoot`。
-2. 读取 API key：先读 `WINDSURF_API_KEY`，再查本地 Devin/Windsurf 凭据。
+2. 读取 API key：按 `FAST_CONTEXT_KEY` → `$HOME/.config/fast-context/config.json` → `WINDSURF_API_KEY` → 本地 Devin/Windsurf 凭据解析。
 3. 通过认证接口换取 JWT，并按 JWT `exp` 做内存缓存。
 4. 调用 rate limit 检查接口，失败则直接返回可读错误。
 5. 构造项目目录树，过大时自动降低 `tree_depth`。
@@ -263,16 +263,14 @@ ripgrep 分发建议：
 
 ### 6.5 凭据读取
 
-读取顺序建议保持上游语义：
+运行时凭据优先级为：
 
-1. `WINDSURF_API_KEY`
-2. Linux/WSL Devin CLI：`~/.local/share/devin/credentials.toml`
-3. Windows：`%APPDATA%\Deviv\User\globalStorage\state.vscdb`
-4. Windows fallback：`%APPDATA%\Windsurf\User\globalStorage\state.vscdb`
-5. macOS：`~/Library/Application Support/Deviv/User/globalStorage/state.vscdb`
-6. macOS fallback：`~/Library/Application Support/Windsurf/User/globalStorage/state.vscdb`
-7. Linux：`${XDG_CONFIG_HOME:-~/.config}/Deviv/User/globalStorage/state.vscdb`
-8. Linux fallback：`${XDG_CONFIG_HOME:-~/.config}/Windsurf/User/globalStorage/state.vscdb`
+1. `FAST_CONTEXT_KEY`
+2. `$HOME/.config/fast-context/config.json` 的 `api_key`
+3. `WINDSURF_API_KEY`
+4. 本地 Devin/Windsurf 凭据：Linux/WSL Devin CLI `~/.local/share/devin/credentials.toml`，以及各平台的 Windsurf/Devin `state.vscdb`
+
+固定 JSON 配置只接受 `api_key` 字段，使用 `encoding/json` 的 `DisallowUnknownFields` 严格解析。文件不存在或空 `api_key` 继续低优先级解析；读取失败、损坏 JSON、未知字段和尾随 JSON 文档直接报错。`FAST_CONTEXT_KEY` 与 JSON key 疑似被 `$` 截断时直接报错，旧 `WINDSURF_API_KEY` 保留本地凭据自愈。
 
 SQLite 实现建议：
 

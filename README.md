@@ -34,7 +34,7 @@ go run ./cmd/fast-context search "where is auth handled" --project . --tree-dept
 | Command | Purpose |
 | --- | --- |
 | `search <query>` | Run AI-driven code discovery through the Windsurf Devstral protocol. |
-| `key extract` | Read `WINDSURF_API_KEY`, Devin CLI TOML, or Windsurf/Devin `state.vscdb`. |
+| `key extract` | Extract only local Devin CLI TOML or Windsurf/Devin `state.vscdb`; it does not resolve the final priority. |
 | `doctor` | Check project path, ripgrep, credentials, and build metadata. |
 | `skills list` | List embedded Agent Skills. |
 | `skills show <skill>` | Return the raw embedded `SKILL.md` or structured JSON. |
@@ -62,6 +62,23 @@ fast-context skills show fast-context --format content
 
 Flags override environment variables; both are clamped to safe ranges.
 
+The CLI also reads an optional user-level JSON file at `$HOME/.config/fast-context/config.json`:
+
+```json
+{
+  "api_key": "your-api-key"
+}
+```
+
+The file is never created or modified by the CLI. It accepts only the documented fields; invalid JSON, unknown fields, unreadable files, and trailing JSON documents are reported as errors. An absent file is treated as unset. Credentials are resolved in this order:
+
+1. `FAST_CONTEXT_KEY`
+2. `api_key` in `$HOME/.config/fast-context/config.json`
+3. `WINDSURF_API_KEY`
+4. Local Devin CLI/Windsurf credentials
+
+Blank values do not claim a priority slot. `FAST_CONTEXT_KEY` and the local config fail fast when they look like a truncated `devin-session-token`; the legacy `WINDSURF_API_KEY` path keeps its local-credential self-healing behavior.
+
 | Env | Default | Meaning |
 | --- | --- | --- |
 | `FC_MAX_TURNS` | 3 | Search rounds (1–5) |
@@ -80,6 +97,7 @@ Flags override environment variables; both are clamped to safe ranges.
 | `FC_LINE_MAX_CHARS` | 250 | Per-line character cap |
 | `FC_RG_PATH` | — | Explicit ripgrep binary path |
 | `FAST_CONTEXT_DEBUG` | — | `1` or `true` prints progress to stderr |
+| `FAST_CONTEXT_KEY` | — | Explicit fast-context key; highest credential priority |
 | `WINDSURF_API_KEY` | — | Manual key; truncated values fall back to local extraction |
 | `FC_INSECURE_TLS` | — | `1` disables TLS verification for local troubleshooting only |
 
@@ -93,6 +111,7 @@ The npm launcher sets `FC_RG_PATH` from `@vscode/ripgrep` only when the user has
 - Remote paths are mapped through `/codebase` and checked against project-root and symlink escape.
 - `RIPGREP_CONFIG_PATH` is cleared for deterministic searches.
 - API keys are redacted; the npm launcher does not inspect credentials or `.env` files.
+- Keep `$HOME/.config/fast-context/config.json` outside repositories and use restrictive user-only permissions (`0700` directory / `0600` file on Unix).
 - TLS verification is enabled by default. `FC_INSECURE_TLS=1` is an explicit troubleshooting override.
 
 ## Development and verification

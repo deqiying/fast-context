@@ -53,6 +53,8 @@ fast-context -v
 
 `version`, `--version`, and `-v` print the same single line.
 
+`key extract` reads only an explicitly selected or discovered local Devin CLI TOML/Windsurf `state.vscdb`. It bypasses runtime priority resolution; `doctor` reports the effective source used by `search`.
+
 ## Search flags and environment
 
 | Flag | Meaning |
@@ -74,6 +76,7 @@ Important environment variables:
 
 | Variable | Meaning |
 | --- | --- |
+| `FAST_CONTEXT_KEY` | Highest-priority explicit fast-context credential. |
 | `WINDSURF_API_KEY` | Explicit Windsurf/Devin credential. |
 | `FC_RG_PATH` | Explicit ripgrep binary; takes precedence over `PATH`. |
 | `FC_INSECURE_TLS=1` | Disable TLS verification for explicit local troubleshooting only. |
@@ -81,6 +84,14 @@ Important environment variables:
 | `FC_REPO_MAP_MODE`, `FC_BOOTSTRAP_ENABLED` | Repository-map defaults. |
 | `FC_INCLUDE_SNIPPETS` | Default snippet behavior. |
 | `FAST_CONTEXT_DEBUG` | Enable progress diagnostics. |
+
+Optional persistent configuration is a user-managed JSON file at `$HOME/.config/fast-context/config.json`:
+
+```json
+{"api_key":"your-api-key"}
+```
+
+Runtime credential priority is `FAST_CONTEXT_KEY` → local JSON `api_key` → `WINDSURF_API_KEY` → local Devin CLI/Windsurf credentials. The file is not auto-created; invalid JSON, unknown fields, unreadable files, and trailing JSON are errors.
 
 ## Structured output
 
@@ -118,6 +129,8 @@ Returns `ok`, the same `skill` definition, and the raw `SKILL.md` in `content`. 
 ```
 
 `ripgrep.source` is `fc_rg_path` or `path`. Top-level `ok` is true only when the project exists, ripgrep resolves, and credentials resolve. Doctor keeps exit code `0`; inspect the fields.
+
+`credentials.source_type` is `env` for either environment variable, `fast_context_config` for the JSON file, or the existing local TOML/SQLite source types. `credentials.key` is always redacted.
 
 ### `search --format json`
 
