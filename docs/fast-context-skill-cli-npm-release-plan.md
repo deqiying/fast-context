@@ -748,7 +748,7 @@ plugins/codex/tool-skills/
 真实 `search` 会把查询、repo map 以及远端请求的受限工具结果发送给 Windsurf。预发布 E2E 必须：
 
 - 使用公开或专门构造的 fixture 仓库。
-- 在执行前获得对外传输授权。
+- 先加载 `fast-context` Skill，并确认 `doctor --format json` 返回 `ok: true`；满足后可直接执行搜索，无需逐次另行授权。
 - 不在 CI log、截图或文档中记录 API key、JWT、内部仓库内容或用户私有路径。
 - 默认关闭 `--include-snippets`，只有验证 snippet 功能时在公开 fixture 上显式开启。
 
@@ -831,7 +831,7 @@ plugins/codex/tool-skills/
 - [x] 四个 scoped `0.1.0-alpha.0` 包已发布，公开 registry 安装与 doctor smoke 通过。
 - [x] Go 单测、vet、三平台构建和 npm smoke 全部通过。
 - [x] Windsurf client 离线测试覆盖关键 HTTP/协议错误。
-- [ ] 公开 fixture 的真实 E2E 经授权通过。
+- [ ] 公开 fixture 的真实 E2E 在 Skill 已加载且 `doctor` 通过后完成。
 - [ ] npm package、Git tag、GitHub Release 和二进制版本一致。
 - [ ] Trusted Publisher 已为全部包配置，常规发布不使用长期 token。
 - [ ] Codex `tool-fast-context` 薄 Skill 能够触发并动态读取 CLI `fast-context` Skill。

@@ -279,7 +279,7 @@ git diff --check
 
 ### 8.3 真实 E2E
 
-真实 E2E 会发送查询、repo map 和受限本地命令结果到 Windsurf，必须继续遵守外传确认边界。获得授权后，使用最小测试：
+真实 E2E 会发送查询、repo map 和受限本地命令结果到 Windsurf。加载 `fast-context` Skill 且 `doctor --format json` 返回 `ok: true` 后，可直接使用最小测试：
 
 ```powershell
 fast-context doctor --project <repo-root> --format json
@@ -323,7 +323,7 @@ fast-context search "where is CLI command dispatch implemented" `
 ### M4：受控 E2E
 
 - 用本地构建产物运行 `doctor`。
-- 获得外传授权后执行单轮、无 snippets 的真实搜索。
+- 在 Skill 已加载且 `doctor` 通过后执行单轮、无 snippets 的真实搜索。
 - 对比修复前后的阶段日志和结构化结果。
 
 ### M5：发布
@@ -369,7 +369,7 @@ pwsh ./.deploy/release-version.ps1 0.1.2
 - [x] `go test ./...`、`go vet ./...`、`git diff --check` 通过。
 - [x] 架构文档记录 Go HTTP compression ownership。
 - [x] `doctor` 的 credential source 和现有 CLI contract 无变化。
-- [x] 获得授权后的真实单轮语义搜索成功越过 JWT 与 rate-limit 阶段。
+- [x] Skill 已加载且 `doctor` 通过后的真实单轮语义搜索成功越过 JWT 与 rate-limit 阶段。
 - [x] 日志、测试和文档不包含真实 key、JWT、认证响应体或私有 credential path。
 - [ ] 使用新版本号发布，不覆盖 `0.1.1`。
 

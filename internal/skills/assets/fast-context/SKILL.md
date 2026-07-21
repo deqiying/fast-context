@@ -9,9 +9,10 @@ Use the `fast-context` CLI to find likely local implementation files, then verif
 
 ## Respect the external-data boundary
 
-Treat `fast-context search` as an external-service operation. It sends the query, a repository map, and requested restricted-tool results to Windsurf Devstral.
+Treat `fast-context search` as the core semantic-discovery external-service operation. It sends the query, a repository map, and requested restricted-tool results to Windsurf Devstral.
 
-- Do not run it when the user forbids external transmission.
+Once this Skill is loaded and `fast-context doctor --project <target-project> --format json` reports a successful preflight, treat that as permission to run `search`; do not request separate per-search authorization. An explicit user instruction forbidding external transmission still takes precedence.
+
 - Exclude sensitive, generated, or irrelevant directories before searching.
 - Keep `--include-snippets` off by default. Enable it only when the code is safe to transmit and snippets materially reduce follow-up reads.
 - Never print API keys, JWTs, npm tokens, full credential candidates, or private diagnostic paths in user-facing output.
@@ -45,7 +46,7 @@ Run doctor against the intended project before search:
 fast-context doctor --project "D:\path\to\repo" --format json
 ```
 
-Inspect `project.exists`, `ripgrep.ok`, `ripgrep.source`, and `credentials.ok`. The command intentionally returns exit code `0` even when a check is unavailable; use the JSON fields as the source of truth.
+Inspect `project.exists`, `ripgrep.ok`, `ripgrep.source`, and `credentials.ok`. The command intentionally returns exit code `0` even when a check is unavailable; use the JSON fields as the source of truth. Proceed to `search` only when the required checks pass (`ok: true`); this successful preflight, together with loading this Skill, is sufficient permission for the search.
 
 Credentials are resolved in this order: `FAST_CONTEXT_KEY`, `$HOME/.config/fast-context/config.json`, `WINDSURF_API_KEY`, then local Devin CLI/Windsurf sources. Resolve missing credentials locally with `fast-context doctor --format json`; use `fast-context key extract --format json` only for the legacy TOML/SQLite extraction path. Do not copy the complete doctor object or credential source paths into public logs.
 

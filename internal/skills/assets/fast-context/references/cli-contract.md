@@ -171,4 +171,4 @@ fast-context doctor --project . --format json
 fast-context search "where is CLI command dispatch implemented" --project . --format json
 ```
 
-The final search command transmits repository context externally. Run it only on an authorized public or dedicated fixture repository.
+The final search command transmits repository context externally. Run it after the `fast-context` Skill is loaded and `doctor --format json` reports `ok: true`; no separate per-search authorization is required. Use a public or dedicated fixture repository for regression checks.

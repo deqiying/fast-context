@@ -22,6 +22,12 @@ func TestReadMarkdownMatchesSourceAsset(t *testing.T) {
 	if !strings.Contains(content, "external-service operation") {
 		t.Fatal("SKILL.md must disclose the external transmission boundary")
 	}
+	if !strings.Contains(content, "do not request separate per-search authorization") {
+		t.Fatal("SKILL.md must allow search after the required preflight")
+	}
+	if !strings.Contains(content, "ok: true") {
+		t.Fatal("SKILL.md must require a successful doctor preflight")
+	}
 }
 
 func TestDefinitionAndAliases(t *testing.T) {
