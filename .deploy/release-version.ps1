@@ -1,6 +1,5 @@
 param(
     [Parameter(Position = 0)]
-    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')]
     [string]$Version
 )
 
@@ -9,7 +8,9 @@ Set-StrictMode -Version Latest
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $versionFile = Join-Path $PSScriptRoot "version"
-$versionPattern = '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+# SemVer 2.0.0: numeric identifiers must not have leading zeroes, while
+# build metadata may contain any non-empty dot-separated identifier.
+$versionPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
 $versionWasProvided = $PSBoundParameters.ContainsKey("Version")
 
 function Invoke-Checked {

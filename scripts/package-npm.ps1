@@ -13,7 +13,8 @@ $packageDistRoot = Join-Path $distRoot "npm"
 $cacheRoot = Join-Path $distRoot "cache"
 $versionFile = Join-Path $repoRoot ".deploy\version"
 $licenseFile = Join-Path $repoRoot "LICENSE"
-$versionPattern = '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+# Keep the local package preflight aligned with the release script and CI.
+$versionPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
 
 function Invoke-Checked {
     param(
