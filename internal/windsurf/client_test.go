@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/deqiying/fast-context/internal/protowire"
+	"github.com/deqiying/fast-context/internal/search"
 )
 
 func TestFetchJWTGzipResponse(t *testing.T) {
@@ -149,6 +150,22 @@ func TestParseResponseAndMalformedFrame(t *testing.T) {
 
 	_, _, err = client.ParseResponse([]byte{0x00, 0x00, 0x00, 0x00, 0x05, 0x01})
 	assertErrorCode(t, err, "PROTOCOL")
+}
+
+func TestParseResponseMarksMalformedToolArgumentsRecoverable(t *testing.T) {
+	payload := &protowire.Encoder{}
+	payload.String(1, `[TOOL_CALLS]restricted_exec[ARGS]{"command1",{"type":"rg"}}`)
+	frame, err := protowire.EncodeConnectFrame(payload.BytesValue(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = NewClient(nil).ParseResponse(frame)
+	assertErrorCode(t, err, "PROTOCOL")
+	var malformed *search.MalformedToolCallError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("error = %T %v, want wrapped MalformedToolCallError", err, err)
+	}
 }
 
 func TestClassifyStatusCodes(t *testing.T) {

@@ -8,6 +8,16 @@ import (
 	"strings"
 )
 
+// MalformedToolCallError 表示模型已输出文本 tool-call 标记，但其 JSON
+// 参数不合法。传输层仍然有效，因此调用方可在不执行本次任何命令的前提下，
+// 请求一次有界的纠正重试。
+type MalformedToolCallError struct {
+	err error
+}
+
+func (e *MalformedToolCallError) Error() string { return e.err.Error() }
+func (e *MalformedToolCallError) Unwrap() error { return e.err }
+
 func ParseToolCall(text string) (*ToolCall, string, error) {
 	text = strings.ReplaceAll(text, "</s>", "")
 	re := regexp.MustCompile(`(?s)\[TOOL_CALLS\](\w+)\[ARGS\](\{.+)`)
@@ -24,7 +34,7 @@ func ParseToolCall(text string) (*ToolCall, string, error) {
 	raw = raw[:end]
 	args := map[string]any{}
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return nil, text[:m[0]], err
+		return nil, text[:m[0]], &MalformedToolCallError{err: err}
 	}
 	return &ToolCall{Name: name, Args: args}, strings.TrimSpace(text[:m[0]]), nil
 }

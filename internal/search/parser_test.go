@@ -1,6 +1,7 @@
 package search
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -20,6 +21,21 @@ func TestParseToolCall(t *testing.T) {
 	cmd := call.Args["command1"].(map[string]any)
 	if cmd["type"] != "rg" {
 		t.Fatalf("unexpected command: %#v", cmd)
+	}
+}
+
+func TestParseToolCallMarksMalformedJSONRecoverable(t *testing.T) {
+	text := `thinking[TOOL_CALLS]restricted_exec[ARGS]{"command1",{"type":"rg","pattern":"Auth","path":"/codebase"}}`
+	call, thinking, err := ParseToolCall(text)
+	if call != nil {
+		t.Fatalf("call = %#v, want nil", call)
+	}
+	if thinking != "thinking" {
+		t.Fatalf("thinking = %q, want thinking", thinking)
+	}
+	var malformed *MalformedToolCallError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("error = %T %v, want MalformedToolCallError", err, err)
 	}
 }
 

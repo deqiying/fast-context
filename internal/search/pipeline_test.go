@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,12 +16,14 @@ import (
 type scriptedClient struct {
 	responses []scriptedResponse
 	calls     int
+	messages  [][]Message
 }
 
 type scriptedResponse struct {
 	thinking string
 	toolCall *ToolCall
 	err      error
+	parseErr error
 }
 
 func (c *scriptedClient) FetchJWT(ctx context.Context, apiKey string, timeout time.Duration) (string, error) {
@@ -32,6 +35,7 @@ func (c *scriptedClient) CheckRateLimit(ctx context.Context, apiKey, jwt string,
 }
 
 func (c *scriptedClient) Stream(ctx context.Context, apiKey, jwt string, messages []Message, toolDefs string, timeout time.Duration) ([]byte, error) {
+	c.messages = append(c.messages, append([]Message(nil), messages...))
 	idx := c.calls
 	if idx >= len(c.responses) {
 		idx = len(c.responses) - 1
@@ -49,7 +53,7 @@ func (c *scriptedClient) ParseResponse(data []byte) (string, *ToolCall, error) {
 	var idx int
 	_ = json.Unmarshal(data, &idx)
 	r := c.responses[idx]
-	return r.thinking, r.toolCall, nil
+	return r.thinking, r.toolCall, r.parseErr
 }
 
 func answerCall(xml string) *ToolCall {
@@ -98,6 +102,50 @@ func TestRunPipelineDirectAnswer(t *testing.T) {
 	}
 	if result.Meta.Strategy != "classic" {
 		t.Fatalf("strategy = %q", result.Meta.Strategy)
+	}
+}
+
+func TestRunRetriesMalformedToolArguments(t *testing.T) {
+	t.Setenv("WINDSURF_API_KEY", "test-key")
+	root := t.TempDir()
+	writeProjectFile(t, root, "auth/login.go", "package auth\nfunc Login() {}\n")
+
+	_, _, malformedErr := ParseToolCall(`thinking[TOOL_CALLS]restricted_exec[ARGS]{"command1",{"type":"rg"}}`)
+	client := &scriptedClient{responses: []scriptedResponse{
+		{parseErr: malformedErr},
+		{toolCall: answerCall(`<ANSWER><file path="/codebase/auth/login.go"><range>1-2</range></file></ANSWER>`)},
+	}}
+	result, err := Run(context.Background(), testOptions(root), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "auth/login.go" {
+		t.Fatalf("unexpected files: %#v", result.Files)
+	}
+	if client.calls != 2 {
+		t.Fatalf("calls = %d, want 2", client.calls)
+	}
+	if len(client.messages) != 2 {
+		t.Fatalf("request count = %d, want 2", len(client.messages))
+	}
+	last := client.messages[1][len(client.messages[1])-1]
+	if last.Role != 1 || last.Content != malformedToolCallRetryPrompt {
+		t.Fatalf("retry prompt = %#v", last)
+	}
+}
+
+func TestRunDoesNotRetryOtherResponseErrors(t *testing.T) {
+	t.Setenv("WINDSURF_API_KEY", "test-key")
+	root := t.TempDir()
+	writeProjectFile(t, root, "auth/login.go", "package auth\nfunc Login() {}\n")
+
+	client := &scriptedClient{responses: []scriptedResponse{{parseErr: errors.New("invalid connect frame")}}}
+	_, err := Run(context.Background(), testOptions(root), client)
+	if err == nil {
+		t.Fatal("expected response error")
+	}
+	if client.calls != 1 {
+		t.Fatalf("calls = %d, want 1", client.calls)
 	}
 }
 

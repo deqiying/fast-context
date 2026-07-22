@@ -6,7 +6,13 @@ import (
 	"strings"
 )
 
-const finalForceAnswer = "You have no turns left. Now you MUST provide your final ANSWER, even if it's not complete."
+const (
+	finalForceAnswer = "You have no turns left. Now you MUST provide your final ANSWER, even if it's not complete."
+
+	// malformedToolCallRetryPrompt 仅在响应通过传输层解码、但 tool 参数未能
+	// 通过 JSON 校验时追加。
+	malformedToolCallRetryPrompt = "The previous tool call arguments were invalid JSON. Retry the current task with exactly one correctly formatted tool call using a valid JSON object. Do not explain the correction."
+)
 
 // systemPromptTemplate is the verbatim upstream 1.5.2 SYSTEM_PROMPT_TEMPLATE.
 // "§" stands in for backticks (Go raw strings cannot contain them) and is

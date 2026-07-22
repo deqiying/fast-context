@@ -148,6 +148,13 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 
 		thinking, toolInfo, err := client.ParseResponse(data)
 		if err != nil {
+			var malformedToolCall *MalformedToolCallError
+			if errors.As(err, &malformedToolCall) && compensatedTurns < maxCompensations {
+				compensatedTurns++
+				messages = append(messages, Message{Role: 1, Content: malformedToolCallRetryPrompt})
+				progress(fmt.Sprintf("Malformed tool arguments on turn %d: requesting a corrected response (%d/%d)", turn+1, compensatedTurns, maxCompensations))
+				continue
+			}
 			return Result{Meta: meta}, err
 		}
 		if toolInfo == nil {
