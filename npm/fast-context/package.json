@@ -1,6 +1,6 @@
 {
   "name": "@deqiying/fast-context",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Semantic local-code discovery CLI for AI agents and terminal users.",
   "license": "MIT",
   "bin": {
@@ -29,9 +29,9 @@
     "@vscode/ripgrep": "1.18.0"
   },
   "optionalDependencies": {
-    "@deqiying/fast-context-darwin-arm64": "0.1.2",
-    "@deqiying/fast-context-linux-x64": "0.1.2",
-    "@deqiying/fast-context-win32-x64": "0.1.2"
+    "@deqiying/fast-context-darwin-arm64": "0.1.3",
+    "@deqiying/fast-context-linux-x64": "0.1.3",
+    "@deqiying/fast-context-win32-x64": "0.1.3"
   },
   "publishConfig": {
     "access": "public"
