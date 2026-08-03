@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +26,33 @@ type scriptedResponse struct {
 	toolCall *ToolCall
 	err      error
 	parseErr error
+}
+
+type callCountingClient struct {
+	fetchJWTCalls  int
+	rateLimitCalls int
+	streamCalls    int
+	parseCalls     int
+}
+
+func (c *callCountingClient) FetchJWT(context.Context, string, time.Duration) (string, error) {
+	c.fetchJWTCalls++
+	return "", errors.New("unexpected FetchJWT call")
+}
+
+func (c *callCountingClient) CheckRateLimit(context.Context, string, string, time.Duration) (bool, error) {
+	c.rateLimitCalls++
+	return false, errors.New("unexpected CheckRateLimit call")
+}
+
+func (c *callCountingClient) Stream(context.Context, string, string, []Message, string, time.Duration) ([]byte, error) {
+	c.streamCalls++
+	return nil, errors.New("unexpected Stream call")
+}
+
+func (c *callCountingClient) ParseResponse([]byte) (string, *ToolCall, error) {
+	c.parseCalls++
+	return "", nil, errors.New("unexpected ParseResponse call")
 }
 
 func (c *scriptedClient) FetchJWT(ctx context.Context, apiKey string, timeout time.Duration) (string, error) {
@@ -82,6 +111,87 @@ func writeProjectFile(t *testing.T, root, rel, content string) {
 	}
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunRejectsTruncatedWindsurfKeyBeforeClientCalls(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("FAST_CONTEXT_KEY", "")
+	t.Setenv("WINDSURF_API_KEY", "devin-session-token$abc")
+
+	client := &callCountingClient{}
+	_, err := Run(context.Background(), testOptions(t.TempDir()), client)
+	if err == nil {
+		t.Fatal("Run() succeeded with a truncated WINDSURF_API_KEY")
+	}
+	if client.fetchJWTCalls != 0 || client.rateLimitCalls != 0 || client.streamCalls != 0 || client.parseCalls != 0 {
+		t.Fatalf("client called before credential failure: %#v", client)
+	}
+	if strings.Contains(err.Error(), "devin-session-token$abc") {
+		t.Fatalf("Run() error leaked truncated key: %v", err)
+	}
+	for _, want := range []string{"FAST_CONTEXT_KEY", "$HOME/.config/fast-context/config.json", "WINDSURF_API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Run() error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestRunRejectsMissingCredentialsBeforeClientCalls(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("FAST_CONTEXT_KEY", "")
+	t.Setenv("WINDSURF_API_KEY", "")
+
+	client := &callCountingClient{}
+	_, err := Run(context.Background(), testOptions(t.TempDir()), client)
+	if err == nil {
+		t.Fatal("Run() succeeded without credentials")
+	}
+	if client.fetchJWTCalls != 0 || client.rateLimitCalls != 0 || client.streamCalls != 0 || client.parseCalls != 0 {
+		t.Fatalf("client called before credential failure: %#v", client)
+	}
+	for _, want := range []string{"FAST_CONTEXT_KEY", "$HOME/.config/fast-context/config.json", "WINDSURF_API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Run() error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestRunRejectsTruncatedAutomaticTomlBeforeClientCalls(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("automatic Devin CLI TOML is supported only on Linux/WSL")
+	}
+	for _, compatibilityKey := range []string{"", "devin-session-token$abc"} {
+		t.Run("compatibility-key="+compatibilityKey, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("FAST_CONTEXT_KEY", "")
+			t.Setenv("WINDSURF_API_KEY", compatibilityKey)
+			credentialPath := filepath.Join(home, ".local", "share", "devin", "credentials.toml")
+			if err := os.MkdirAll(filepath.Dir(credentialPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(credentialPath, []byte(`api_key = "devin-session-token$also-truncated"`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			client := &callCountingClient{}
+			_, err := Run(context.Background(), testOptions(t.TempDir()), client)
+			if err == nil {
+				t.Fatal("Run() succeeded with a truncated automatic TOML credential")
+			}
+			if client.fetchJWTCalls != 0 || client.rateLimitCalls != 0 || client.streamCalls != 0 || client.parseCalls != 0 {
+				t.Fatalf("client called before credential failure: %#v", client)
+			}
+			if strings.Contains(err.Error(), "devin-session-token$also-truncated") {
+				t.Fatalf("Run() error leaked truncated automatic credential: %v", err)
+			}
+		})
 	}
 }
 

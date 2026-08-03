@@ -45,7 +45,7 @@ MVP 目标是一个可独立运行的 Go CLI：
 ```powershell
 fast-context search "where is auth handled" --project . --tree-depth 3 --max-turns 3 --max-results 10
 fast-context search "database connection pool" --project E:\Project\GoLand\sub2api --format json
-fast-context key extract
+fast-context key extract --path <state.vscdb>
 fast-context doctor
 ```
 
@@ -110,7 +110,7 @@ internal/version/
 | --- | --- |
 | `internal/cli` | 参数解析、子命令、退出码、用户可读错误 |
 | `internal/config` | 读取 `FC_*` env 和 flag 默认值，并严格解析用户级 JSON 配置 |
-| `internal/credentials` | 按优先级解析 `FAST_CONTEXT_KEY`、本地 JSON、`WINDSURF_API_KEY`、Devin CLI TOML 和 Windsurf/Devin `state.vscdb` |
+| `internal/credentials` | 按优先级解析 `FAST_CONTEXT_KEY`、本地 JSON、`WINDSURF_API_KEY` 和 Linux/WSL Devin CLI TOML；仅在显式 `--path` 时读取 `state.vscdb` |
 | `internal/repomap` | 生成 `/codebase` 虚拟树，自动 depth fallback |
 | `internal/executor` | 受限本地命令执行和路径沙箱 |
 | `internal/windsurf` | 认证、JWT 缓存、rate limit 检查、流式请求 |
@@ -123,7 +123,7 @@ internal/version/
 `search` 命令执行流程：
 
 1. 解析 CLI 参数并确定 `projectRoot`。
-2. 读取 API key：按 `FAST_CONTEXT_KEY` → `$HOME/.config/fast-context/config.json` → `WINDSURF_API_KEY` → 本地 Devin/Windsurf 凭据解析。
+2. 读取 API key：按 `FAST_CONTEXT_KEY` → `$HOME/.config/fast-context/config.json` → `WINDSURF_API_KEY` → Linux/WSL Devin CLI TOML 解析；运行时不自动发现 `state.vscdb`。
 3. 通过认证接口换取 JWT，并按 JWT `exp` 做内存缓存。
 4. 调用 rate limit 检查接口，失败则直接返回可读错误。
 5. 构造项目目录树，过大时自动降低 `tree_depth`。
@@ -270,24 +270,26 @@ ripgrep 分发建议：
 1. `FAST_CONTEXT_KEY`
 2. `$HOME/.config/fast-context/config.json` 的 `api_key`
 3. `WINDSURF_API_KEY`
-4. 本地 Devin/Windsurf 凭据：Linux/WSL Devin CLI `~/.local/share/devin/credentials.toml`，以及各平台的 Windsurf/Devin `state.vscdb`
+4. 仅 Linux/WSL：Devin CLI `~/.local/share/devin/credentials.toml`
 
-固定 JSON 配置只接受 `api_key` 字段，使用 `encoding/json` 的 `DisallowUnknownFields` 严格解析。文件不存在或空 `api_key` 继续低优先级解析；读取失败、损坏 JSON、未知字段和尾随 JSON 文档直接报错。`FAST_CONTEXT_KEY` 与 JSON key 疑似被 `$` 截断时直接报错，旧 `WINDSURF_API_KEY` 保留本地凭据自愈。
+固定 JSON 配置只接受 `api_key` 字段，使用 `encoding/json` 的 `DisallowUnknownFields` 严格解析。文件不存在或空 `api_key` 继续低优先级解析；读取失败、损坏 JSON、未知字段和尾随 JSON 文档直接报错。`FAST_CONTEXT_KEY` 与 JSON key 疑似被 `$` 截断时直接报错；截断的 `WINDSURF_API_KEY` 只允许从 Linux/WSL Devin CLI TOML 恢复，无可用 TOML 时在网络请求前失败。
 
-SQLite 实现建议：
+Windsurf/Devin `state.vscdb` 不属于运行时自动凭据来源。只有用户明确执行 `fast-context key extract --path <state.vscdb>` 时才进入 SQLite 读取路径；`doctor.credentials.candidates` 不得列出数据库默认路径。
+
+显式 SQLite 读取实现：
 
 | 方案 | 评价 |
 | --- | --- |
 | `modernc.org/sqlite` | 纯 Go，无 CGO，跨平台发布简单，推荐 |
 | `github.com/mattn/go-sqlite3` | 成熟但需要 CGO，Windows 交叉编译麻烦 |
 
-读取 `state.vscdb` 时查询：
+显式读取 `state.vscdb` 时查询：
 
 ```sql
 SELECT value FROM ItemTable WHERE key = 'windsurfAuthStatus'
 ```
 
-再从 JSON 字段中取 `apiKey`。如果数据库被应用占用，Go 版可以先复制到临时文件再只读打开，以接近上游 `sql.js` 读文件快照的行为。
+再从 JSON 字段中取 `apiKey`。为避免数据库锁冲突，CLI 先复制到临时文件再只读打开，并在正常返回和可恢复错误路径清理快照；进程异常终止仍可能留下临时文件。
 
 ### 6.6 搜索编排
 
@@ -371,13 +373,13 @@ JSON 输出用于脚本和 agent 集成：
 | --- | --- | --- |
 | CLI | `spf13/cobra` | 多子命令更省心；也可先用标准库 |
 | Protobuf wire | `google.golang.org/protobuf/encoding/protowire` | 无 `.proto` 也能安全写 wire format |
-| SQLite | `modernc.org/sqlite` | 纯 Go，适合跨平台发布 |
+| SQLite | `modernc.org/sqlite` | 纯 Go，仅用于显式 `key extract --path <state.vscdb>`，适合跨平台发布 |
 | TOML | `github.com/pelletier/go-toml/v2` | 读取 Devin CLI credentials |
 | Glob | `github.com/bmatcuk/doublestar/v4` | 支持 `**` |
 | XML | 标准库 `encoding/xml` | 解析 `<ANSWER>` |
 | HTTP/gzip/binary | 标准库 | 足够实现 Connect frame |
 
-如果目标是极简依赖，可以先不用 `cobra` 和 TOML 库：CLI 用标准库，TOML API key 用正则读取。SQLite 和 glob 仍建议使用成熟库。
+如果目标是极简依赖，可以先不用 `cobra` 和 TOML 库：CLI 用标准库，TOML API key 用正则读取。显式 SQLite 诊断和 glob 仍建议使用成熟库。
 
 ## 8. 测试与验证策略
 
@@ -386,7 +388,7 @@ JSON 输出用于脚本和 agent 集成：
 | 测试类型 | 覆盖内容 |
 | --- | --- |
 | Golden bytes | Protobuf 字段编码、Connect frame 编解码 |
-| Credential fixtures | TOML、SQLite `state.vscdb`、缺失字段、空 key |
+| Credential fixtures | 三平台自动来源不含 `state.vscdb`、Linux/WSL TOML、显式 SQLite、缺失字段、空 key、临时快照清理 |
 | Executor temp repo | `rg`、`readfile`、`tree`、`ls`、`glob` 和路径逃逸 |
 | Response parser | `[TOOL_CALLS]`、错误 JSON、`<ANSWER>` XML |
 | Search orchestrator | mock client 返回 tool call 和 final answer |
@@ -420,8 +422,8 @@ FC_TEST_API_BASE=http://127.0.0.1:...
 
 | 交付物 | 验证 |
 | --- | --- |
-| `fast-context key extract` | TOML/SQLite fixture 单测 |
-| `fast-context doctor` | 输出 key 来源、rg 状态、平台路径 |
+| `fast-context key extract` | 默认 TOML 与显式 SQLite fixture 单测 |
+| `fast-context doctor` | 输出 key 来源、rg 状态和候选路径，且不包含自动数据库路径 |
 | 敏感信息脱敏 | 输出只显示前后片段 |
 
 ### M3：Windsurf 协议客户端
@@ -480,8 +482,8 @@ FC_TEST_API_BASE=http://127.0.0.1:...
 | --- | --- | --- |
 | Windsurf 私有协议变更 | 工具突然不可用 | Golden test + 真实 smoke test + 清晰错误分类 |
 | 字段号或 metadata 不完整 | 认证或搜索失败 | 初版严格对齐上游字段，避免提前“清理” |
-| API key 本地路径变化 | 自动发现失败 | `doctor` 输出尝试路径，保留 env 手动注入 |
-| SQLite 被锁或格式变化 | 凭据读取失败 | 复制快照读取；错误提示回退到 `WINDSURF_API_KEY` |
+| Linux/WSL Devin CLI TOML 路径变化 | 自动回退失败 | `doctor` 输出候选路径，保留三个显式运行时来源 |
+| 显式 SQLite 被锁或格式变化 | `key extract --path` 失败 | 复制快照读取并返回来源错误；不影响运行时自动凭据解析 |
 | ripgrep 分发复杂 | 用户安装体验变差 | MVP 允许 PATH，发布版内置 per-platform rg |
 | 远端模型输出不规范 | search loop 中断 | 保留补偿轮、JSON 容错、强制 answer prompt |
 | 安全边界被绕过 | 本地文件泄露或命令注入 | 路径沙箱、结构化参数、禁止 shell 拼接、敏感信息脱敏 |

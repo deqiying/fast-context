@@ -53,7 +53,7 @@ fast-context -v
 
 `version`, `--version`, and `-v` print the same single line.
 
-`key extract` reads only an explicitly selected or discovered local Devin CLI TOML/Windsurf `state.vscdb`. It bypasses runtime priority resolution; `doctor` reports the effective source used by `search`.
+Without `--path`, `key extract` checks only the default Linux/WSL Devin CLI TOML. An explicit `--path` can inspect a selected TOML or `state.vscdb`; databases are never discovered automatically. The command bypasses runtime priority resolution, while `doctor` reports the effective source used by `search`.
 
 ## Search flags and environment
 
@@ -91,7 +91,7 @@ Optional persistent configuration is a user-managed JSON file at `$HOME/.config/
 {"api_key":"your-api-key"}
 ```
 
-Runtime credential priority is `FAST_CONTEXT_KEY` → local JSON `api_key` → `WINDSURF_API_KEY` → local Devin CLI/Windsurf credentials. The file is not auto-created; invalid JSON, unknown fields, unreadable files, and trailing JSON are errors.
+Runtime credential priority is `FAST_CONTEXT_KEY` → local JSON `api_key` → `WINDSURF_API_KEY` → Linux/WSL Devin CLI TOML. Windsurf/Devin `state.vscdb` is not a runtime source and is never discovered automatically. The JSON file is not auto-created; invalid JSON, unknown fields, unreadable files, and trailing JSON are errors.
 
 ## Structured output
 
@@ -130,7 +130,7 @@ Returns `ok`, the same `skill` definition, and the raw `SKILL.md` in `content`. 
 
 `ripgrep.source` is `fc_rg_path` or `path`. Top-level `ok` is true only when the project exists, ripgrep resolves, and credentials resolve. Doctor keeps exit code `0`; inspect the fields.
 
-`credentials.source_type` is `env` for either environment variable, `fast_context_config` for the JSON file, or the existing local TOML/SQLite source types. `credentials.key` is always redacted.
+For `doctor`, `credentials.source_type` is `env` for either environment variable, `fast_context_config` for the JSON file, or `devin_cli_credentials` for the Linux/WSL TOML. An explicit `key extract --path <state.vscdb>` can still return `windsurf_state_db`; it is never an automatic `doctor` source. `credentials.key` is always redacted.
 
 ### `search --format json`
 

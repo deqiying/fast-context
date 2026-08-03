@@ -2,7 +2,7 @@
 
 Go CLI version of `fast-context-mcp`, feature-aligned with npm `fast-context-mcp@1.5.2`. The upstream GitHub repository is stale at v1.2.2, so use `npm pack fast-context-mcp@latest` as the behavior-comparison baseline.
 
-The CLI keeps semantic search, credential discovery, restricted local tools, structured output, and an embedded Agent Skill in one Go binary. npm distribution adds a small JavaScript launcher, three platform packages, and a bundled ripgrep dependency.
+The CLI keeps semantic search, explicit credential configuration and inspection, restricted local tools, structured output, and an embedded Agent Skill in one Go binary. npm distribution adds a small JavaScript launcher, three platform packages, and a bundled ripgrep dependency.
 
 ## Install
 
@@ -34,7 +34,7 @@ go run ./cmd/fast-context search "where is auth handled" --project . --tree-dept
 | Command | Purpose |
 | --- | --- |
 | `search <query>` | Run AI-driven code discovery through the Windsurf Devstral protocol. |
-| `key extract` | Extract only local Devin CLI TOML or Windsurf/Devin `state.vscdb`; it does not resolve the final priority. |
+| `key extract [--path <path>]` | Inspect the default Linux/WSL Devin CLI TOML or an explicitly selected TOML/`state.vscdb`; databases are never discovered automatically. |
 | `doctor` | Check project path, ripgrep, credentials, and build metadata. |
 | `skills list` | List embedded Agent Skills. |
 | `skills show <skill>` | Return the raw embedded `SKILL.md` or structured JSON. |
@@ -75,9 +75,9 @@ The file is never created or modified by the CLI. It accepts only the documented
 1. `FAST_CONTEXT_KEY`
 2. `api_key` in `$HOME/.config/fast-context/config.json`
 3. `WINDSURF_API_KEY`
-4. Local Devin CLI/Windsurf credentials
+4. Linux/WSL Devin CLI `~/.local/share/devin/credentials.toml`
 
-Blank values do not claim a priority slot. `FAST_CONTEXT_KEY` and the local config fail fast when they look like a truncated `devin-session-token`; the legacy `WINDSURF_API_KEY` path keeps its local-credential self-healing behavior.
+Blank values do not claim a priority slot. `FAST_CONTEXT_KEY` and the local config fail fast when they look like a truncated `devin-session-token`. A truncated `WINDSURF_API_KEY` may recover only from the Linux/WSL Devin CLI TOML; otherwise it fails locally before any network request. Windsurf/Devin `state.vscdb` files are never discovered automatically.
 
 | Env | Default | Meaning |
 | --- | --- | --- |
@@ -98,7 +98,7 @@ Blank values do not claim a priority slot. `FAST_CONTEXT_KEY` and the local conf
 | `FC_RG_PATH` | — | Explicit ripgrep binary path |
 | `FAST_CONTEXT_DEBUG` | — | `1` or `true` prints progress to stderr |
 | `FAST_CONTEXT_KEY` | — | Explicit fast-context key; highest credential priority |
-| `WINDSURF_API_KEY` | — | Manual key; truncated values fall back to local extraction |
+| `WINDSURF_API_KEY` | — | Manual key; truncated values may recover from the Linux/WSL Devin CLI TOML only |
 | `FC_INSECURE_TLS` | — | `1` disables TLS verification for local troubleshooting only |
 
 The npm launcher sets `FC_RG_PATH` from `@vscode/ripgrep` only when the user has not already set it.
@@ -111,6 +111,7 @@ The npm launcher sets `FC_RG_PATH` from `@vscode/ripgrep` only when the user has
 - Remote paths are mapped through `/codebase` and checked against project-root and symlink escape.
 - `RIPGREP_CONFIG_PATH` is cleared for deterministic searches.
 - API keys are redacted; the npm launcher does not inspect credentials or `.env` files.
+- Runtime commands never discover Windsurf/Devin `state.vscdb`. `key extract --path <state.vscdb>` is an explicit diagnostic action that copies the selected database to a temporary snapshot and normally removes it before returning; abnormal process termination can leave that snapshot behind.
 - Keep `$HOME/.config/fast-context/config.json` outside repositories and use restrictive user-only permissions (`0700` directory / `0600` file on Unix).
 - TLS verification is enabled by default. `FC_INSECURE_TLS=1` is an explicit troubleshooting override.
 

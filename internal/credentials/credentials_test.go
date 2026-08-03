@@ -1,11 +1,74 @@
 package credentials
 
 import (
+	"database/sql"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/deqiying/fast-context/internal/config"
 )
+
+func writeStateDBFixture(t *testing.T, rawValue string, insertRecord bool) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fixture.state.vscdb")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if insertRecord {
+		if _, err := db.Exec("INSERT INTO ItemTable (key, value) VALUES (?, ?)", "windsurfAuthStatus", rawValue); err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func snapshotFiles(t *testing.T, dir string) map[string]struct{} {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "fast-context-state-*.vscdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		out[path] = struct{}{}
+	}
+	return out
+}
+
+func assertNoNewSnapshots(t *testing.T, dir string, before map[string]struct{}) {
+	t.Helper()
+	for path := range snapshotFiles(t, dir) {
+		if _, ok := before[path]; !ok {
+			t.Fatalf("temporary state database snapshot was not removed: %s", path)
+		}
+	}
+}
+
+func isolatedTempDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
+	t.Setenv("TMP", root)
+	t.Setenv("TEMP", root)
+	dir := os.TempDir()
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) {
+		t.Fatalf("os.TempDir() = %q, want path inside %q", dir, root)
+	}
+	return dir
+}
 
 func TestExtractAPIKeyFromToml(t *testing.T) {
 	got := ExtractAPIKeyFromToml(`
@@ -36,6 +99,140 @@ func TestRedact(t *testing.T) {
 	got := Redact("sk-abcdefghijklmnopqrstuvwxyz")
 	if got != "sk-abc...wxyz" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAutomaticCredentialSources(t *testing.T) {
+	home := filepath.Join("fixture", "home")
+	tests := []struct {
+		goos string
+		want []source
+	}{
+		{goos: "windows"},
+		{goos: "darwin"},
+		{
+			goos: "linux",
+			want: []source{{
+				kind: "toml",
+				path: filepath.Join(home, ".local", "share", "devin", "credentials.toml"),
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			got := automaticCredentialSources(tt.goos, home)
+			if len(got) != len(tt.want) {
+				t.Fatalf("automaticCredentialSources(%q) = %#v, want %#v", tt.goos, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("automaticCredentialSources(%q)[%d] = %#v, want %#v", tt.goos, i, got[i], tt.want[i])
+				}
+				if strings.EqualFold(filepath.Base(got[i].path), "state.vscdb") {
+					t.Fatalf("automatic source contains state.vscdb: %s", got[i].path)
+				}
+			}
+		})
+	}
+}
+
+func TestExtractExplicitSources(t *testing.T) {
+	tomlPath := filepath.Join(t.TempDir(), "credentials.toml")
+	if err := os.WriteFile(tomlPath, []byte(`api_key = "toml-key"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tomlInfo, err := Extract(tomlPath)
+	if err != nil || tomlInfo.APIKey != "toml-key" || tomlInfo.SourceType != "devin_cli_credentials" {
+		t.Fatalf("Extract(TOML) = %#v, %v", tomlInfo, err)
+	}
+
+	dbPath := writeStateDBFixture(t, `{"apiKey":"devin-session-token$eyJfixture"}`, true)
+	dbInfo, err := Extract(dbPath)
+	if err != nil {
+		t.Fatalf("Extract(SQLite) error = %v", err)
+	}
+	if dbInfo.APIKey != "devin-session-token$eyJfixture" || dbInfo.SourcePath != dbPath || dbInfo.SourceType != "windsurf_state_db" {
+		t.Fatalf("Extract(SQLite) = %#v", dbInfo)
+	}
+}
+
+func TestExtractSQLiteErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    func(*testing.T) string
+		wantErr string
+	}{
+		{
+			name: "missing record",
+			path: func(t *testing.T) string {
+				return writeStateDBFixture(t, "", false)
+			},
+			wantErr: "windsurfAuthStatus record not found",
+		},
+		{
+			name: "malformed payload",
+			path: func(t *testing.T) string {
+				return writeStateDBFixture(t, "not-json", true)
+			},
+			wantErr: "windsurfAuthStatus data parse failed",
+		},
+		{
+			name: "missing file",
+			path: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing.state.vscdb")
+			},
+			wantErr: "Windsurf/Devin credential source not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info, err := Extract(tt.path(t))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Extract() = %#v, %v; want error containing %q", info, err, tt.wantErr)
+			}
+			if info.APIKey != "" {
+				t.Fatalf("Extract() returned key on failure: %#v", info)
+			}
+		})
+	}
+}
+
+func TestExtractPreservesCredentialSourceStatError(t *testing.T) {
+	path := "invalid\x00credentials.toml"
+	info, err := Extract(path)
+	if err == nil || !strings.Contains(err.Error(), "failed to inspect credential source") {
+		t.Fatalf("Extract() = %#v, %v; want source inspection error", info, err)
+	}
+	if errors.Is(err, errCredentialSourceNotFound) {
+		t.Fatalf("Extract() disguised source inspection error as not found: %v", err)
+	}
+	if info.SourcePath != path || info.SourceType != "devin_cli_credentials" || info.APIKey != "" {
+		t.Fatalf("Extract() returned unexpected source info: %#v", info)
+	}
+}
+
+func TestExtractSQLiteCleansTemporarySnapshot(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawValue  string
+		wantError bool
+	}{
+		{name: "success", rawValue: `{"apiKey":"fixture-key"}`},
+		{name: "parse failure", rawValue: "not-json", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := isolatedTempDir(t)
+			before := snapshotFiles(t, tempDir)
+			_, err := Extract(writeStateDBFixture(t, tt.rawValue, true))
+			if (err != nil) != tt.wantError {
+				t.Fatalf("Extract() error = %v, wantError=%t", err, tt.wantError)
+			}
+			assertNoNewSnapshots(t, tempDir, before)
+		})
 	}
 }
 
@@ -134,6 +331,103 @@ func TestFindAPIKeyBlankValuesContinue(t *testing.T) {
 		})
 	if err != nil || got.APIKey != "windsurf-key" || got.SourcePath != "WINDSURF_API_KEY" {
 		t.Fatalf("findAPIKey() = %#v, %v", got, err)
+	}
+}
+
+func TestFindAPIKeyTruncatedWindsurfRecovery(t *testing.T) {
+	t.Run("uses automatic TOML recovery", func(t *testing.T) {
+		calls := 0
+		got, err := findAPIKey(func(name string) string {
+			if name == "WINDSURF_API_KEY" {
+				return "devin-session-token$abc"
+			}
+			return ""
+		}, func() (config.LocalConfig, config.LocalConfigInfo, error) {
+			return config.LocalConfig{}, config.LocalConfigInfo{Path: "config.json"}, nil
+		}, func(string) (Info, error) {
+			calls++
+			return Info{APIKey: "devin-session-token$eyJfixture", SourcePath: "fixture.toml", SourceType: "devin_cli_credentials"}, nil
+		})
+		if err != nil || calls != 1 || got.SourcePath != "fixture.toml" || got.APIKey == "" {
+			t.Fatalf("findAPIKey() = %#v, %v; calls=%d", got, err, calls)
+		}
+	})
+
+	t.Run("fails without automatic recovery", func(t *testing.T) {
+		calls := 0
+		got, err := findAPIKey(func(name string) string {
+			if name == "WINDSURF_API_KEY" {
+				return "devin-session-token$abc"
+			}
+			return ""
+		}, func() (config.LocalConfig, config.LocalConfigInfo, error) {
+			return config.LocalConfig{}, config.LocalConfigInfo{Path: "config.json"}, nil
+		}, func(string) (Info, error) {
+			calls++
+			return Info{TriedPaths: []string{"fixture.toml"}}, errCredentialSourceNotFound
+		})
+		if err == nil || calls != 1 {
+			t.Fatalf("findAPIKey() = %#v, %v; calls=%d", got, err, calls)
+		}
+		if got.APIKey != "" || strings.Contains(err.Error(), "devin-session-token$abc") {
+			t.Fatalf("truncated key leaked from findAPIKey(): %#v, %v", got, err)
+		}
+		for _, want := range []string{"FAST_CONTEXT_KEY", "$HOME/.config/fast-context/config.json", "WINDSURF_API_KEY"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("findAPIKey() error missing %q: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("rejects truncated automatic recovery", func(t *testing.T) {
+		got, err := findAPIKey(func(name string) string {
+			if name == "WINDSURF_API_KEY" {
+				return "devin-session-token$abc"
+			}
+			return ""
+		}, func() (config.LocalConfig, config.LocalConfigInfo, error) {
+			return config.LocalConfig{}, config.LocalConfigInfo{Path: "config.json"}, nil
+		}, func(string) (Info, error) {
+			return Info{APIKey: "devin-session-token$also-truncated", SourcePath: "fixture.toml", SourceType: "devin_cli_credentials"}, nil
+		})
+		if err == nil || got.APIKey != "" || got.SourcePath != "fixture.toml" {
+			t.Fatalf("findAPIKey() = %#v, %v; want truncated automatic credential failure", got, err)
+		}
+		if strings.Contains(err.Error(), "devin-session-token$also-truncated") {
+			t.Fatalf("findAPIKey() leaked truncated automatic credential: %v", err)
+		}
+	})
+}
+
+func TestFindAPIKeyRejectsTruncatedAutomaticCredential(t *testing.T) {
+	got, err := findAPIKey(func(string) string { return "" }, func() (config.LocalConfig, config.LocalConfigInfo, error) {
+		return config.LocalConfig{}, config.LocalConfigInfo{Path: "config.json"}, nil
+	}, func(string) (Info, error) {
+		return Info{APIKey: "devin-session-token$abc", SourcePath: "fixture.toml", SourceType: "devin_cli_credentials"}, nil
+	})
+	if err == nil || got.APIKey != "" || got.SourcePath != "fixture.toml" {
+		t.Fatalf("findAPIKey() = %#v, %v; want truncated automatic credential failure", got, err)
+	}
+	for _, want := range []string{"automatic Devin CLI credential appears truncated", "FAST_CONTEXT_KEY", "$HOME/.config/fast-context/config.json", "WINDSURF_API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("findAPIKey() error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestFindAPIKeyMissingProvidesSetupHint(t *testing.T) {
+	got, err := findAPIKey(func(string) string { return "" }, func() (config.LocalConfig, config.LocalConfigInfo, error) {
+		return config.LocalConfig{}, config.LocalConfigInfo{Path: "config.json"}, nil
+	}, func(string) (Info, error) {
+		return Info{}, errCredentialSourceNotFound
+	})
+	if err == nil || got.APIKey != "" {
+		t.Fatalf("findAPIKey() = %#v, %v", got, err)
+	}
+	for _, want := range []string{"FAST_CONTEXT_KEY", "$HOME/.config/fast-context/config.json", "WINDSURF_API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("findAPIKey() error missing %q: %v", want, err)
+		}
 	}
 }
 

@@ -41,7 +41,7 @@ For a persistent user-level key, create `$HOME/.config/fast-context/config.json`
 }
 ```
 
-The CLI does not create or rewrite this file. Runtime credentials are resolved in this order: `FAST_CONTEXT_KEY`, the JSON `api_key`, `WINDSURF_API_KEY`, then local Devin CLI/Windsurf credentials. Use `fast-context doctor --format json` to inspect the effective source; use `fast-context key extract` only to inspect the legacy local TOML/SQLite sources. Never commit the file or print a complete key in logs.
+The CLI does not create or rewrite this file. Runtime credentials are resolved in this order: `FAST_CONTEXT_KEY`, the JSON `api_key`, `WINDSURF_API_KEY`, then the Linux/WSL Devin CLI `~/.local/share/devin/credentials.toml`. Windsurf/Devin `state.vscdb` files are never discovered automatically. Use `fast-context doctor --format json` to inspect the effective source; use `fast-context key extract --path <state.vscdb>` only when you explicitly intend to inspect a legacy database. Never commit the file or print a complete key in logs.
 
 ## License and origin
 

@@ -40,12 +40,17 @@ var tomlFields = []string{
 	"token",
 }
 
+var errCredentialSourceNotFound = errors.New("Windsurf/Devin credential source not found")
+var errAutomaticCredentialTruncated = errors.New("automatic Devin CLI credential appears truncated; repair the '$' credential value")
+
+const credentialSetupHint = "set FAST_CONTEXT_KEY, set api_key in $HOME/.config/fast-context/config.json, or set WINDSURF_API_KEY"
+
 type localConfigLoader func() (config.LocalConfig, config.LocalConfigInfo, error)
 type credentialExtractor func(string) (Info, error)
 
 // FindAPIKey resolves credentials in the documented runtime order:
-// FAST_CONTEXT_KEY, fixed local config, WINDSURF_API_KEY, then local
-// Windsurf/Devin credentials.
+// FAST_CONTEXT_KEY, fixed local config, WINDSURF_API_KEY, then the Linux/WSL
+// Devin CLI TOML source.
 func FindAPIKey() (Info, error) {
 	return findAPIKey(os.Getenv, config.LoadLocal, Extract)
 }
@@ -77,16 +82,51 @@ func findAPIKey(getenv func(string) string, loadLocal localConfigLoader, extract
 		// Upstream 1.5.2: keys look like `devin-session-token$<JWT>`; shells and
 		// TOML env loaders can eat `$eyJ...` as a variable expansion, leaving a
 		// truncated key that always yields HTTP 401. Distrust it and fall back
-		// to local extraction so the user self-heals without config changes.
+		// to the remaining automatic TOML source so the user can self-heal
+		// without reading a Windsurf/Devin state database implicitly.
 		if !LooksTruncated(key) {
 			return Info{APIKey: key, SourcePath: "WINDSURF_API_KEY", SourceType: "env"}, nil
 		}
-		if info, err := extract(""); err == nil && info.APIKey != "" {
+		info, err := extract("")
+		info, err = validateAutomaticCredential(info, err)
+		if err == nil && info.APIKey != "" {
 			return info, nil
 		}
-		return Info{APIKey: key, SourcePath: "WINDSURF_API_KEY", SourceType: "env"}, nil
+		info.APIKey = ""
+		if info.SourcePath == "" {
+			info.SourcePath = "WINDSURF_API_KEY"
+			info.SourceType = "env"
+		}
+		return info, truncatedWindsurfAPIKeyError(err)
 	}
-	return extract("")
+	info, err := extract("")
+	info, err = validateAutomaticCredential(info, err)
+	if err == nil && info.APIKey != "" {
+		return info, nil
+	}
+	if err == nil || errors.Is(err, errCredentialSourceNotFound) {
+		return info, errors.New("fast-context credential not configured; " + credentialSetupHint)
+	}
+	if errors.Is(err, errAutomaticCredentialTruncated) {
+		return info, errors.New(err.Error() + "; " + credentialSetupHint)
+	}
+	return info, err
+}
+
+func validateAutomaticCredential(info Info, err error) (Info, error) {
+	if err == nil && info.APIKey != "" && LooksTruncated(info.APIKey) {
+		info.APIKey = ""
+		return info, errAutomaticCredentialTruncated
+	}
+	return info, err
+}
+
+func truncatedWindsurfAPIKeyError(recoveryErr error) error {
+	const prefix = "WINDSURF_API_KEY appears truncated; quote or escape the '$' character"
+	if recoveryErr == nil || errors.Is(recoveryErr, errCredentialSourceNotFound) {
+		return errors.New(prefix + "; " + credentialSetupHint)
+	}
+	return fmt.Errorf("%s; automatic Devin CLI credential recovery failed: %w; %s", prefix, recoveryErr, credentialSetupHint)
 }
 
 // LooksTruncated reports whether a manually supplied key appears to have lost
@@ -117,7 +157,11 @@ func Extract(explicitPath string) (Info, error) {
 	var firstErrInfo Info
 	for _, src := range sources {
 		tried = append(tried, src.path)
-		if _, err := os.Stat(src.path); err != nil {
+		if _, statErr := os.Stat(src.path); statErr != nil {
+			if !errors.Is(statErr, os.ErrNotExist) && firstExistingErr == nil {
+				firstExistingErr = fmt.Errorf("failed to inspect credential source %s: %w", src.path, statErr)
+				firstErrInfo = Info{SourcePath: src.path, SourceType: sourceType(src.kind)}
+			}
 			continue
 		}
 
@@ -153,7 +197,14 @@ func Extract(explicitPath string) (Info, error) {
 		firstErrInfo.TriedPaths = tried
 		return firstErrInfo, firstExistingErr
 	}
-	return Info{TriedPaths: tried}, errors.New("Windsurf/Devin credential source not found")
+	return Info{TriedPaths: tried}, errCredentialSourceNotFound
+}
+
+func sourceType(kind string) string {
+	if kind == "toml" {
+		return "devin_cli_credentials"
+	}
+	return "windsurf_state_db"
 }
 
 // isPreferredAPIKey reports whether the key is a current Devin/Windsurf
@@ -191,57 +242,17 @@ func credentialSources(explicitPath string) ([]source, error) {
 		return nil, err
 	}
 
-	var out []source
-	if runtime.GOOS == "linux" {
-		out = append(out, source{
-			kind: "toml",
-			path: filepath.Join(home, ".local", "share", "devin", "credentials.toml"),
-		})
-	}
-
-	for _, p := range dbPathCandidates(runtime.GOOS, home, os.Environ()) {
-		out = append(out, source{kind: "sqlite", path: p})
-	}
-	return out, nil
+	return automaticCredentialSources(runtime.GOOS, home), nil
 }
 
-// dbPathCandidates mirrors upstream 1.5.2: Windsurf was taken over by Devin
-// (same DB schema, only the app directory changed), so probe Windsurf first
-// for legacy installs, then Devin (lowercase "devin" on Linux).
-func dbPathCandidates(goos, home string, env []string) []string {
-	envMap := map[string]string{}
-	for _, item := range env {
-		if k, v, ok := strings.Cut(item, "="); ok {
-			envMap[k] = v
-		}
+func automaticCredentialSources(goos, home string) []source {
+	if goos != "linux" {
+		return nil
 	}
-
-	switch goos {
-	case "darwin":
-		base := filepath.Join(home, "Library", "Application Support")
-		return []string{
-			filepath.Join(base, "Windsurf", "User", "globalStorage", "state.vscdb"),
-			filepath.Join(base, "Devin", "User", "globalStorage", "state.vscdb"),
-		}
-	case "windows":
-		appData := envMap["APPDATA"]
-		if appData == "" {
-			appData = filepath.Join(home, "AppData", "Roaming")
-		}
-		return []string{
-			filepath.Join(appData, "Windsurf", "User", "globalStorage", "state.vscdb"),
-			filepath.Join(appData, "Devin", "User", "globalStorage", "state.vscdb"),
-		}
-	default:
-		configDir := envMap["XDG_CONFIG_HOME"]
-		if configDir == "" {
-			configDir = filepath.Join(home, ".config")
-		}
-		return []string{
-			filepath.Join(configDir, "Windsurf", "User", "globalStorage", "state.vscdb"),
-			filepath.Join(configDir, "devin", "User", "globalStorage", "state.vscdb"),
-		}
-	}
+	return []source{{
+		kind: "toml",
+		path: filepath.Join(home, ".local", "share", "devin", "credentials.toml"),
+	}}
 }
 
 func extractFromToml(path string) (Info, error) {

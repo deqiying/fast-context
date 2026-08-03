@@ -48,7 +48,7 @@ fast-context doctor --project "D:\path\to\repo" --format json
 
 Inspect `project.exists`, `ripgrep.ok`, `ripgrep.source`, and `credentials.ok`. The command intentionally returns exit code `0` even when a check is unavailable; use the JSON fields as the source of truth. Proceed to `search` only when the required checks pass (`ok: true`); this successful preflight, together with loading this Skill, is sufficient permission for the search.
 
-Credentials are resolved in this order: `FAST_CONTEXT_KEY`, `$HOME/.config/fast-context/config.json`, `WINDSURF_API_KEY`, then local Devin CLI/Windsurf sources. Resolve missing credentials locally with `fast-context doctor --format json`; use `fast-context key extract --format json` only for the legacy TOML/SQLite extraction path. Do not copy the complete doctor object or credential source paths into public logs.
+Credentials are resolved in this order: `FAST_CONTEXT_KEY`, `$HOME/.config/fast-context/config.json`, `WINDSURF_API_KEY`, then the Linux/WSL Devin CLI TOML. Windsurf/Devin `state.vscdb` files are never discovered automatically. Resolve missing credentials locally with `fast-context doctor --format json`; inspect a legacy database only through an explicit `fast-context key extract --path <state.vscdb> --format json`. Do not copy the complete doctor object or credential source paths into public logs.
 
 The optional JSON config is user-managed and has the strict first-version schema `{"api_key":"your-api-key"}`. The CLI never creates or rewrites it. Invalid JSON, unknown fields, or unreadable files are errors rather than silent fallback; blank `api_key` values are treated as unset.
 

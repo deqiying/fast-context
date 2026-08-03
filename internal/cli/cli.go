@@ -500,8 +500,10 @@ Flags:
   --path <path>              Read a specific .toml or state.vscdb source
   --format <text|json>       Output format (default: text)
 
-This command extracts only local Windsurf/Devin sources. Use 'fast-context doctor'
-to inspect the effective runtime credential source and its priority.
+Without --path, this command checks only the default Linux/WSL Devin CLI TOML.
+Windsurf/Devin state.vscdb files are never discovered automatically; pass
+--path to inspect one explicitly. Use 'fast-context doctor' to inspect the
+effective runtime credential source and its priority.
 
 `)
 }
@@ -515,7 +517,8 @@ Flags:
   --format <text|json>       Output format (default: text)
 
 Credentials are resolved in this order: FAST_CONTEXT_KEY, local config,
-WINDSURF_API_KEY, then local Windsurf/Devin sources.
+WINDSURF_API_KEY, then the Linux/WSL Devin CLI TOML. Windsurf/Devin
+state.vscdb files are never discovered automatically.
 
 `)
 }

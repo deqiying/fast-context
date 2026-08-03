@@ -28,6 +28,12 @@ func TestReadMarkdownMatchesSourceAsset(t *testing.T) {
 	if !strings.Contains(content, "ok: true") {
 		t.Fatal("SKILL.md must require a successful doctor preflight")
 	}
+	if !strings.Contains(content, "`state.vscdb` files are never discovered automatically") {
+		t.Fatal("SKILL.md must prohibit automatic state.vscdb discovery")
+	}
+	if !strings.Contains(content, "key extract --path") {
+		t.Fatal("SKILL.md must document explicit state.vscdb extraction")
+	}
 }
 
 func TestDefinitionAndAliases(t *testing.T) {
