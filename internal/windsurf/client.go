@@ -13,12 +13,16 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/deqiying/fast-context/internal/protowire"
 	"github.com/deqiying/fast-context/internal/search"
+	"github.com/deqiying/fast-context/internal/textutil"
 )
 
 const (
@@ -29,6 +33,15 @@ const (
 	wsAppVer = "1.48.2"
 	wsLSVer  = "1.9544.35"
 	wsModel  = "MODEL_SWE_1_6_FAST"
+
+	maxRemoteErrorBodyBytes = 64 * 1024
+	maxRemoteMessageBytes   = 2 * 1024
+)
+
+var (
+	remoteCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	traceIDRe    = regexp.MustCompile(`(?i)trace\s*ID\s*[:=]\s*[a-z0-9-]{1,128}`)
 )
 
 type Client struct {
@@ -100,11 +113,28 @@ func (c *Client) CheckRateLimit(ctx context.Context, apiKey, jwt string, timeout
 	return false, err
 }
 
+func (c *Client) RequestSize(apiKey, jwt string, messages []search.Message, toolDefs string) (int, error) {
+	proto, err := buildRequest(apiKey, jwt, messages, toolDefs)
+	if err != nil {
+		return 0, err
+	}
+	return len(proto), nil
+}
+
 func (c *Client) Stream(ctx context.Context, apiKey, jwt string, messages []search.Message, toolDefs string, timeout time.Duration) ([]byte, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	proto := buildRequest(apiKey, jwt, messages, toolDefs)
+	proto, err := buildRequest(apiKey, jwt, messages, toolDefs)
+	if err != nil {
+		return nil, err
+	}
+	if len(proto) > search.MaxRequestProtoBytes {
+		return nil, &Error{
+			code: "PAYLOAD_TOO_LARGE",
+			err:  fmt.Errorf("request protobuf is %d bytes; limit is %d bytes", len(proto), search.MaxRequestProtoBytes),
+		}
+	}
 	frame, err := protowire.EncodeConnectFrame(proto, true)
 	if err != nil {
 		return nil, &Error{code: "PROTOCOL", err: err}
@@ -136,14 +166,21 @@ func (c *Client) Stream(ctx context.Context, apiKey, jwt string, messages []sear
 			lastErr = classify(err, 0)
 			continue
 		}
-		body, readErr := io.ReadAll(resp.Body)
+		var body []byte
+		var bodyTooLarge bool
+		var readErr error
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			body, readErr = io.ReadAll(resp.Body)
+		} else {
+			body, bodyTooLarge, readErr = readLimitedErrorBody(resp.Body)
+		}
 		_ = resp.Body.Close()
 		cancel()
 		if readErr != nil {
 			return nil, classify(readErr, 0)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = classify(fmt.Errorf("HTTP %d", resp.StatusCode), resp.StatusCode)
+			lastErr = classifyHTTPError(resp.StatusCode, body, bodyTooLarge)
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 				return nil, lastErr
 			}
@@ -164,22 +201,17 @@ func (c *Client) ParseResponse(data []byte) (string, *search.ToolCall, error) {
 	}
 	var all strings.Builder
 	for _, frame := range frames {
-		text := strings.ToValidUTF8(string(frame), "")
-		if strings.HasPrefix(strings.TrimSpace(text), "{") {
-			var payload struct {
-				Error struct {
-					Code    string `json:"code"`
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			if json.Unmarshal([]byte(text), &payload) == nil && payload.Error.Message != "" {
-				return "[Error] " + payload.Error.Code + ": " + payload.Error.Message, nil, nil
-			}
+		if remote, ok := parseRemoteError(frame); ok {
+			return "", nil, remoteTypedError(remote, "PROTOCOL")
 		}
+		text := strings.ToValidUTF8(string(frame), "")
 		if strings.Contains(text, "[TOOL_CALLS]") || strings.Contains(text, "<ANSWER>") {
 			all.WriteString(text)
 		}
 		for _, s := range protowire.ExtractStrings(frame) {
+			if remote, ok := parseRemoteError([]byte(s)); ok {
+				return "", nil, remoteTypedError(remote, "PROTOCOL")
+			}
 			if strings.Contains(s, "[TOOL_CALLS]") || strings.Contains(s, "<ANSWER>") {
 				all.WriteString(s)
 			}
@@ -227,19 +259,42 @@ func (c *Client) unary(ctx context.Context, url string, proto []byte, compress b
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, classify(fmt.Errorf("HTTP %d", resp.StatusCode), resp.StatusCode)
+		body, tooLarge, readErr := readLimitedErrorBody(resp.Body)
+		if readErr != nil {
+			return nil, classify(readErr, 0)
+		}
+		return nil, classifyHTTPError(resp.StatusCode, body, tooLarge)
 	}
 	return io.ReadAll(resp.Body)
 }
 
-func buildRequest(apiKey, jwt string, messages []search.Message, toolDefs string) []byte {
+func buildRequest(apiKey, jwt string, messages []search.Message, toolDefs string) ([]byte, error) {
+	for field, value := range map[string]string{
+		"api_key":                 apiKey,
+		"jwt":                     jwt,
+		"app_version":             envDefault("WS_APP_VER", wsAppVer),
+		"language_server_version": envDefault("WS_LS_VER", wsLSVer),
+		"hostname":                hostname(),
+		"sysname":                 sysname(),
+	} {
+		if !utf8.ValidString(value) {
+			return nil, &Error{code: "PROTOCOL", err: fmt.Errorf("request metadata %s contains invalid UTF-8", field)}
+		}
+	}
+	if !utf8.ValidString(toolDefs) {
+		return nil, &Error{code: "PROTOCOL", err: errors.New("tool definitions contain invalid UTF-8")}
+	}
 	req := &protowire.Encoder{}
 	req.Message(1, buildMetadata(apiKey, jwt))
 	for _, m := range messages {
-		req.Message(2, buildChatMessage(m))
+		message, err := buildChatMessage(m)
+		if err != nil {
+			return nil, err
+		}
+		req.Message(2, message)
 	}
 	req.String(3, toolDefs)
-	return req.BytesValue()
+	return req.BytesValue(), nil
 }
 
 func buildMetadata(apiKey, jwt string) *protowire.Encoder {
@@ -279,7 +334,18 @@ func buildMetadata(apiKey, jwt string) *protowire.Encoder {
 	return meta
 }
 
-func buildChatMessage(m search.Message) *protowire.Encoder {
+func buildChatMessage(m search.Message) (*protowire.Encoder, error) {
+	for field, value := range map[string]string{
+		"content":        m.Content,
+		"tool_call_id":   m.ToolCallID,
+		"tool_name":      m.ToolName,
+		"tool_args_json": m.ToolArgsJSON,
+		"ref_call_id":    m.RefCallID,
+	} {
+		if !utf8.ValidString(value) {
+			return nil, &Error{code: "PROTOCOL", err: fmt.Errorf("message %s contains invalid UTF-8", field)}
+		}
+	}
 	msg := &protowire.Encoder{}
 	msg.Varint(2, uint64(m.Role))
 	msg.String(3, m.Content)
@@ -293,7 +359,7 @@ func buildChatMessage(m search.Message) *protowire.Encoder {
 	if m.RefCallID != "" {
 		msg.String(7, m.RefCallID)
 	}
-	return msg
+	return msg, nil
 }
 
 func classify(err error, status int) error {
@@ -313,6 +379,110 @@ func classify(err error, status int) error {
 		code = "TIMEOUT"
 	}
 	return &Error{code: code, err: err}
+}
+
+type remoteErrorPayload struct {
+	Code    string
+	Message string
+}
+
+func parseRemoteError(data []byte) (remoteErrorPayload, bool) {
+	if len(data) == 0 || len(data) > maxRemoteErrorBodyBytes {
+		return remoteErrorPayload{}, false
+	}
+	var payload struct {
+		Error   *remoteErrorPayload `json:"error"`
+		Code    string              `json:"code"`
+		Message string              `json:"message"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return remoteErrorPayload{}, false
+	}
+	remote := remoteErrorPayload{Code: payload.Code, Message: payload.Message}
+	if payload.Error != nil {
+		remote = *payload.Error
+	}
+	if remote.Code == "" && remote.Message == "" {
+		return remoteErrorPayload{}, false
+	}
+	remote.Message = sanitizeRemoteMessage(remote.Message)
+	return remote, true
+}
+
+func remoteTypedError(remote remoteErrorPayload, fallbackCode string) error {
+	code := fallbackCode
+	if remoteCodeRe.MatchString(remote.Code) {
+		code = remote.Code
+	}
+	message := remote.Message
+	if message == "" {
+		message = "remote request failed"
+	}
+	if remoteCodeRe.MatchString(remote.Code) && !strings.HasPrefix(message, remote.Code+":") {
+		message = remote.Code + ": " + message
+	}
+	message = sanitizeRemoteMessage(message)
+	return &Error{code: code, err: errors.New(message)}
+}
+
+func classifyHTTPError(status int, body []byte, bodyTooLarge bool) error {
+	baseCode := "SERVER_ERROR"
+	switch {
+	case status == http.StatusRequestEntityTooLarge:
+		baseCode = "PAYLOAD_TOO_LARGE"
+	case status == http.StatusTooManyRequests:
+		baseCode = "RATE_LIMITED"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		baseCode = "AUTH_ERROR"
+	case status >= 500:
+		baseCode = "SERVER_ERROR"
+	}
+	if !bodyTooLarge {
+		if remote, ok := parseRemoteError(body); ok {
+			if status >= 400 && status < 500 &&
+				status != http.StatusUnauthorized && status != http.StatusForbidden &&
+				status != http.StatusTooManyRequests && status != http.StatusRequestEntityTooLarge &&
+				remoteCodeRe.MatchString(remote.Code) {
+				return remoteTypedError(remote, baseCode)
+			}
+			if remote.Message != "" {
+				message := sanitizeRemoteMessage(fmt.Sprintf("HTTP %d: %s", status, remote.Message))
+				return &Error{code: baseCode, err: errors.New(message)}
+			}
+		}
+	}
+	return &Error{code: baseCode, err: fmt.Errorf("HTTP %d", status)}
+}
+
+func readLimitedErrorBody(reader io.Reader) ([]byte, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maxRemoteErrorBodyBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(body) > maxRemoteErrorBodyBytes {
+		return nil, true, nil
+	}
+	return body, false, nil
+}
+
+func sanitizeRemoteMessage(message string) string {
+	message, _ = textutil.NormalizeUTF8(message)
+	message = ansiEscapeRe.ReplaceAllString(message, "")
+	message = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, message)
+	message = strings.Join(strings.Fields(message), " ")
+	traceID := traceIDRe.FindString(message)
+	trimmed, truncated := textutil.TruncateUTF8Bytes(message, maxRemoteMessageBytes, " ...[truncated]")
+	if !truncated || traceID == "" || strings.Contains(trimmed, traceID) {
+		return trimmed
+	}
+	separator := " (" + traceID + ")"
+	prefix, _ := textutil.TruncateUTF8Bytes(message, maxRemoteMessageBytes-len(separator), " ...[truncated]")
+	return prefix + separator
 }
 
 func normalizeTimeout(timeout time.Duration) time.Duration {

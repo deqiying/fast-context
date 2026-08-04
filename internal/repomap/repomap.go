@@ -3,9 +3,10 @@ package repomap
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
 
 const MaxTreeBytes = 250 * 1024
@@ -20,12 +21,17 @@ type Map struct {
 
 // SuggestTreeDepth mirrors upstream _suggestTreeDepth: pick a depth from the
 // number of top-level entries (<500 → 4, ≤5000 → 3, >5000 → 2).
-func SuggestTreeDepth(projectRoot string) int {
+func SuggestTreeDepth(projectRoot string, policy *pathfilter.Policy) int {
 	entries, err := os.ReadDir(projectRoot)
 	if err != nil {
 		return 3
 	}
-	count := len(entries)
+	count := 0
+	for _, entry := range entries {
+		if policy == nil || !policy.Excluded(filepath.Join(projectRoot, entry.Name())) {
+			count++
+		}
+	}
 	switch {
 	case count < 500:
 		return 4
@@ -38,10 +44,10 @@ func SuggestTreeDepth(projectRoot string) int {
 
 // Build renders the project tree with adaptive depth fallback. targetDepth 0
 // means auto depth based on project size.
-func Build(projectRoot string, targetDepth int, excludePaths []string) Map {
+func Build(projectRoot string, targetDepth int, policy *pathfilter.Policy) Map {
 	autoDepth := targetDepth == 0
 	if autoDepth {
-		targetDepth = SuggestTreeDepth(projectRoot)
+		targetDepth = SuggestTreeDepth(projectRoot, policy)
 	}
 	if targetDepth < 1 {
 		targetDepth = 1
@@ -51,13 +57,12 @@ func Build(projectRoot string, targetDepth int, excludePaths []string) Map {
 	}
 	root, err := filepath.Abs(projectRoot)
 	if err != nil {
-		m := fallback(projectRoot, excludePaths)
+		m := fallback(projectRoot, policy)
 		m.AutoDepth = autoDepth
 		return m
 	}
-	excludes := compileExcludes(excludePaths)
 	for depth := targetDepth; depth >= 1; depth-- {
-		tree, err := renderTree(root, "/codebase", depth, excludes)
+		tree, err := renderTree(root, "/codebase", depth, policy)
 		if err != nil {
 			continue
 		}
@@ -66,16 +71,19 @@ func Build(projectRoot string, targetDepth int, excludePaths []string) Map {
 			return Map{Tree: tree, Depth: depth, SizeBytes: size, FellBack: depth < targetDepth, AutoDepth: autoDepth}
 		}
 	}
-	m := fallback(root, excludePaths)
+	m := fallback(root, policy)
 	m.AutoDepth = autoDepth
 	return m
 }
 
 // BuildSubtree renders a hotspot subtree rooted at /codebase/<dir>.
-func BuildSubtree(projectRoot, dir string, levels int) string {
+func BuildSubtree(projectRoot, dir string, levels int, policy *pathfilter.Policy) string {
 	abs := filepath.Join(projectRoot, dir)
 	vroot := "/codebase/" + filepath.ToSlash(dir)
-	tree, err := renderTree(abs, vroot, levels, nil)
+	if policy != nil && policy.Excluded(abs) {
+		return ""
+	}
+	tree, err := renderTree(abs, vroot, levels, policy)
 	if err != nil {
 		return vroot + "\n  (failed to generate subtree)"
 	}
@@ -83,8 +91,7 @@ func BuildSubtree(projectRoot, dir string, levels int) string {
 }
 
 // ListTopLevelDirs returns non-excluded top-level directory names, sorted.
-func ListTopLevelDirs(projectRoot string, excludePaths []string) []string {
-	excludes := compileExcludes(excludePaths)
+func ListTopLevelDirs(projectRoot string, policy *pathfilter.Policy) []string {
 	entries, err := os.ReadDir(projectRoot)
 	if err != nil {
 		return nil
@@ -94,7 +101,7 @@ func ListTopLevelDirs(projectRoot string, excludePaths []string) []string {
 		if !entry.IsDir() {
 			continue
 		}
-		if matchesExclude(excludes, entry.Name(), entry.Name()) {
+		if policy != nil && policy.Excluded(filepath.Join(projectRoot, entry.Name())) {
 			continue
 		}
 		out = append(out, entry.Name())
@@ -103,8 +110,7 @@ func ListTopLevelDirs(projectRoot string, excludePaths []string) []string {
 	return out
 }
 
-func fallback(projectRoot string, excludePaths []string) Map {
-	excludes := compileExcludes(excludePaths)
+func fallback(projectRoot string, policy *pathfilter.Policy) Map {
 	entries, err := os.ReadDir(projectRoot)
 	if err != nil {
 		tree := "/codebase\n(empty or inaccessible)"
@@ -112,7 +118,7 @@ func fallback(projectRoot string, excludePaths []string) Map {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if matchesExclude(excludes, entry.Name(), entry.Name()) {
+		if policy != nil && policy.Excluded(filepath.Join(projectRoot, entry.Name())) {
 			continue
 		}
 		names = append(names, entry.Name())
@@ -129,17 +135,17 @@ func fallback(projectRoot string, excludePaths []string) Map {
 	return Map{Tree: tree, Depth: 0, SizeBytes: len(tree), FellBack: true}
 }
 
-func renderTree(root, displayRoot string, maxDepth int, excludes []excludePattern) (string, error) {
+func renderTree(root, displayRoot string, maxDepth int, policy *pathfilter.Policy) (string, error) {
 	var b strings.Builder
 	b.WriteString(displayRoot)
-	err := writeTree(&b, root, root, "", 1, maxDepth, excludes)
+	err := writeTree(&b, root, "", 1, maxDepth, policy)
 	if err != nil {
 		return "", err
 	}
 	return b.String(), nil
 }
 
-func writeTree(b *strings.Builder, root, dir, prefix string, depth, maxDepth int, excludes []excludePattern) error {
+func writeTree(b *strings.Builder, dir, prefix string, depth, maxDepth int, policy *pathfilter.Policy) error {
 	if depth > maxDepth {
 		return nil
 	}
@@ -157,12 +163,8 @@ func writeTree(b *strings.Builder, root, dir, prefix string, depth, maxDepth int
 	})
 	filtered := make([]os.DirEntry, 0, len(entries))
 	for _, entry := range entries {
-		rel, err := filepath.Rel(root, filepath.Join(dir, entry.Name()))
-		if err != nil {
-			rel = entry.Name()
-		}
-		rel = filepath.ToSlash(rel)
-		if matchesExclude(excludes, entry.Name(), rel) {
+		fullPath := filepath.Join(dir, entry.Name())
+		if policy != nil && policy.Excluded(fullPath) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -180,67 +182,8 @@ func writeTree(b *strings.Builder, root, dir, prefix string, depth, maxDepth int
 		b.WriteString(connector)
 		b.WriteString(entry.Name())
 		if entry.IsDir() {
-			_ = writeTree(b, root, filepath.Join(dir, entry.Name()), nextPrefix, depth+1, maxDepth, excludes)
+			_ = writeTree(b, filepath.Join(dir, entry.Name()), nextPrefix, depth+1, maxDepth, policy)
 		}
 	}
 	return nil
-}
-
-type excludePattern struct {
-	simple string
-	re     *regexp.Regexp
-}
-
-func compileExcludes(patterns []string) []excludePattern {
-	out := make([]excludePattern, 0, len(patterns))
-	for _, pattern := range patterns {
-		pattern = strings.TrimSpace(filepath.ToSlash(pattern))
-		if pattern == "" {
-			continue
-		}
-		if !strings.ContainsAny(pattern, "*?") {
-			out = append(out, excludePattern{simple: pattern})
-			continue
-		}
-		out = append(out, excludePattern{re: regexp.MustCompile(globToRegex(pattern))})
-	}
-	return out
-}
-
-func matchesExclude(patterns []excludePattern, name, rel string) bool {
-	rel = filepath.ToSlash(rel)
-	for _, pattern := range patterns {
-		if pattern.simple != "" {
-			if name == pattern.simple || rel == pattern.simple || strings.HasPrefix(rel, pattern.simple+"/") {
-				return true
-			}
-			continue
-		}
-		if pattern.re != nil && (pattern.re.MatchString(name) || pattern.re.MatchString(rel)) {
-			return true
-		}
-	}
-	return false
-}
-
-func globToRegex(pattern string) string {
-	var b strings.Builder
-	b.WriteString("^")
-	for i := 0; i < len(pattern); i++ {
-		switch pattern[i] {
-		case '*':
-			if i+1 < len(pattern) && pattern[i+1] == '*' {
-				b.WriteString(".*")
-				i++
-			} else {
-				b.WriteString(".*")
-			}
-		case '?':
-			b.WriteByte('.')
-		default:
-			b.WriteString(regexp.QuoteMeta(string(pattern[i])))
-		}
-	}
-	b.WriteString("$")
-	return b.String()
 }

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/deqiying/fast-context/internal/textutil"
 )
 
 // CodeBudget caps snippet output at ~45KB code + ~5KB metadata ≈ 50KB total.
@@ -30,7 +32,8 @@ func readCodeSnippets(filePath string, ranges []LineRange, budget int) ([]string
 	if err != nil {
 		return nil, 0
 	}
-	lines := strings.Split(string(data), "\n")
+	text, _ := textutil.NormalizeUTF8(string(data))
+	lines := strings.Split(text, "\n")
 
 	effectiveRanges := ranges
 	if len(effectiveRanges) == 0 {
@@ -67,9 +70,9 @@ func readCodeSnippets(filePath string, ranges []LineRange, budget int) ([]string
 		block := b.String()
 
 		if used+len(block) > budget {
-			remaining := budget - used - 100
+			remaining := budget - used
 			if remaining > 200 {
-				truncated := block[:remaining] + "\n... [truncated]```"
+				truncated, _ := textutil.TruncateUTF8Bytes(block, remaining, "\n... [truncated]\n```")
 				snippets = append(snippets, truncated)
 				used += len(truncated)
 			}

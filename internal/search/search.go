@@ -1,6 +1,7 @@
 package search
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,17 +10,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/deqiying/fast-context/internal/config"
 	"github.com/deqiying/fast-context/internal/credentials"
 	"github.com/deqiying/fast-context/internal/executor"
+	"github.com/deqiying/fast-context/internal/pathfilter"
 	"github.com/deqiying/fast-context/internal/repomap"
+	"github.com/deqiying/fast-context/internal/textutil"
 )
 
-// maxProtoBytes triggers a preflight context trim before sending (upstream
-// MAX_PROTO_BYTES).
-const maxProtoBytes = 320 * 1024
+const (
+	maxToolArgsJSONBytes    = 16 * 1024
+	maxCommandStringBytes   = 2 * 1024
+	maxCommandListItems     = 32
+	maxCommandListItemBytes = 512
+)
+
+var commandIndexRe = regexp.MustCompile(`^command([1-9]\d*)$`)
+
+type decodedCommandBatch struct {
+	Commands []executor.NamedCommand
+	ArgsJSON string
+	Rejected int
+}
 
 func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 	if client == nil {
@@ -42,7 +61,13 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 	if !st.IsDir() {
 		return Result{}, fmt.Errorf("project path is not a directory: %s", projectRoot)
 	}
-	effectiveExcludes := config.MergeExcludePaths(opts.ExcludePaths)
+	policy := opts.pathPolicy
+	if policy == nil {
+		policy, err = pathfilter.New(projectRoot, config.MergeExcludePaths(opts.ExcludePaths))
+		if err != nil {
+			return Result{}, err
+		}
+	}
 
 	keyInfo, err := credentials.FindAPIKey()
 	if err != nil {
@@ -62,7 +87,7 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 		return Result{}, errors.New("rate limited, please try again later")
 	}
 
-	execEngine, err := executor.New(projectRoot)
+	execEngine, err := executor.NewWithPolicy(projectRoot, policy)
 	if err != nil {
 		return Result{}, err
 	}
@@ -70,11 +95,11 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 
 	var hints *repomap.BootstrapHints
 	if opts.RepoMapMode == "bootstrap_hotspot" && opts.BootstrapEnabled {
-		hints = runBootstrapPhase(ctx, opts, client, keyInfo.APIKey, jwt, projectRoot, effectiveExcludes, progress)
+		hints = runBootstrapPhase(ctx, opts, client, keyInfo.APIKey, jwt, projectRoot, policy, progress)
 		progress(fmt.Sprintf("Bootstrap hints: patterns=%d, hot_dirs=%d", len(hints.RGPatterns), len(hints.HotDirs)))
 	}
 
-	repoMap := repomap.BuildOptimized(opts.Query, projectRoot, opts.TreeDepth, effectiveExcludes, repomap.OptimizerOptions{
+	repoMap := repomap.BuildOptimized(opts.Query, projectRoot, opts.TreeDepth, policy, repomap.OptimizerOptions{
 		Mode:               opts.RepoMapMode,
 		BootstrapTreeDepth: opts.BootstrapTreeDepth,
 		HotspotTopK:        opts.HotspotTopK,
@@ -108,6 +133,7 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 	}
 
 	userContent := fmt.Sprintf("Problem Statement: %s\n\nRepo Map (tree -L %d /codebase):\n```text\n%s\n```", opts.Query, repoMap.Depth, repoMap.Tree)
+	userContent, _ = textutil.NormalizeUTF8(userContent)
 	messages := []Message{
 		{Role: 5, Content: buildSystemPrompt(opts.MaxTurns, opts.MaxCommands, opts.MaxResults)},
 		{Role: 1, Content: userContent},
@@ -117,36 +143,64 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 	compensatedTurns := 0
 	const maxCompensations = 2
 	forceAnswerInjected := false
-	state := &trimState{query: opts.Query}
+	normalizedQuery, _ := textutil.NormalizeUTF8(opts.Query)
+	state := &trimState{query: normalizedQuery}
+	invalidArgumentRetried := false
 
 	for turn := 0; turn < totalAPICalls+compensatedTurns; turn++ {
 		progress(fmt.Sprintf("Turn %d/%d", turn+1, totalAPICalls))
 		state.turn = turn + 1
 
 		// Preflight trim: proactively reduce payload before sending.
-		if size := estimateRequestSize(messages, toolDefs); size > maxProtoBytes && len(messages) > 1 {
-			progress(fmt.Sprintf("Estimated payload %d bytes > %d. Trimming context before request...", size, maxProtoBytes))
+		if size := estimateRequestSize(messages, toolDefs); size > MaxRequestProtoBytes && len(messages) > 1 {
+			progress(fmt.Sprintf("Estimated payload %d bytes > %d. Trimming context before request...", size, MaxRequestProtoBytes))
 			if trimMessages(&messages, state) {
 				meta.ContextTrimmed = true
 			}
 		}
 
-		data, err := client.Stream(ctx, keyInfo.APIKey, jwt, messages, toolDefs, opts.Timeout)
+		thinking, toolInfo, err := sendAndParse(ctx, client, keyInfo.APIKey, jwt, messages, toolDefs, opts.Timeout)
 		if err != nil {
-			meta.ErrorCode = errorCode(err)
-			if (meta.ErrorCode == "PAYLOAD_TOO_LARGE" || meta.ErrorCode == "TIMEOUT") && len(messages) > 1 {
-				progress(fmt.Sprintf("%s on turn %d: trimming context and retrying...", meta.ErrorCode, turn+1))
-				trimMessages(&messages, state)
-				meta.ContextTrimmed = true
-				data, err = client.Stream(ctx, keyInfo.APIKey, jwt, messages, toolDefs, opts.Timeout)
+			code := errorCode(err)
+			if (code == "PAYLOAD_TOO_LARGE" || code == "TIMEOUT") && len(messages) > 1 {
+				candidate := append([]Message(nil), messages...)
+				if trimMessages(&candidate, state) {
+					progress(fmt.Sprintf("%s on turn %d: trimming context and retrying...", code, turn+1))
+					messages = candidate
+					meta.ContextTrimmed = true
+					thinking, toolInfo, err = sendAndParse(ctx, client, keyInfo.APIKey, jwt, messages, toolDefs, opts.Timeout)
+				}
 			}
-			if err != nil {
-				meta.ErrorCode = errorCode(err)
-				return Result{Files: nil, Meta: meta}, err
+
+			if err != nil && errorCode(err) == "invalid_argument" && !invalidArgumentRetried {
+				candidate, beforeBytes, afterBytes, ok, sizeErr := buildInvalidArgumentRecovery(
+					client,
+					keyInfo.APIKey,
+					jwt,
+					messages,
+					toolDefs,
+					state,
+				)
+				if sizeErr != nil {
+					progress("Remote invalid_argument recovery skipped: request size could not be verified")
+				} else if ok {
+					progress(fmt.Sprintf(
+						"Remote invalid_argument on turn %d: request protobuf reduced from %d to %d bytes; retrying once",
+						turn+1,
+						beforeBytes,
+						afterBytes,
+					))
+					messages = candidate
+					meta.ContextTrimmed = true
+					invalidArgumentRetried = true
+					thinking, toolInfo, err = sendAndParse(ctx, client, keyInfo.APIKey, jwt, messages, toolDefs, opts.Timeout)
+				}
+			}
+
+			if err == nil {
+				meta.ErrorCode = ""
 			}
 		}
-
-		thinking, toolInfo, err := client.ParseResponse(data)
 		if err != nil {
 			var malformedToolCall *MalformedToolCallError
 			if errors.As(err, &malformedToolCall) && compensatedTurns < maxCompensations {
@@ -155,6 +209,7 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 				progress(fmt.Sprintf("Malformed tool arguments on turn %d: requesting a corrected response (%d/%d)", turn+1, compensatedTurns, maxCompensations))
 				continue
 			}
+			meta.ErrorCode = errorCode(err)
 			return Result{Meta: meta}, err
 		}
 		if toolInfo == nil {
@@ -169,28 +224,41 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 			answerXML, _ := toolInfo.Args["answer"].(string)
 			progress("Received final answer")
 			result := ParseAnswer(answerXML, projectRoot)
+			result.Files = filterResultFiles(result.Files, policy)
 			result.RGPatterns = unique(execEngine.CollectedRgPatterns)
 			result.Meta = meta
 			return result, nil
 		case "restricted_exec":
 			callID := randomID()
-			commands := decodeCommands(toolInfo.Args)
-			progress(fmt.Sprintf("Executing %d local commands", len(commands)))
-			argsJSON, _ := json.Marshal(toolInfo.Args)
-			results := execEngine.ExecToolCall(ctx, commands)
-			if len(commands) == 0 && compensatedTurns < maxCompensations {
+			batch := decodeCommands(toolInfo.Args, opts.MaxCommands)
+			progress(fmt.Sprintf("Tool batch: accepted=%d rejected=%d", len(batch.Commands), batch.Rejected))
+			progress(fmt.Sprintf("Executing %d local commands", len(batch.Commands)))
+			batchResult := execEngine.ExecToolCall(ctx, batch.Commands)
+			progress(fmt.Sprintf(
+				"Tool results: bytes_before=%d bytes_after=%d truncated=%t utf8_repaired=%t",
+				batchResult.BytesBefore,
+				batchResult.BytesAfter,
+				batchResult.Truncated,
+				batchResult.UTF8Repaired,
+			))
+			if len(batch.Commands) == 0 && compensatedTurns < maxCompensations {
 				compensatedTurns++
 				progress(fmt.Sprintf("Turn compensation: no valid commands, extending search by 1 turn (%d/%d)", compensatedTurns, maxCompensations))
 			}
-			state.record(commands)
+			state.record(batch.Commands)
+			thinking, _ = textutil.TruncateUTF8Bytes(
+				thinking,
+				maxAssistantThinkingBytes,
+				"\n...[assistant content truncated]...",
+			)
 			messages = append(messages, Message{
 				Role:         2,
 				Content:      thinking,
 				ToolCallID:   callID,
 				ToolName:     "restricted_exec",
-				ToolArgsJSON: string(argsJSON),
+				ToolArgsJSON: batch.ArgsJSON,
 			})
-			messages = append(messages, Message{Role: 4, Content: results, RefCallID: callID})
+			messages = append(messages, Message{Role: 4, Content: batchResult.Text, RefCallID: callID})
 			effectiveTurn := turn - compensatedTurns
 			if effectiveTurn >= opts.MaxTurns-1 && !forceAnswerInjected {
 				messages = append(messages, Message{Role: 1, Content: finalForceAnswer})
@@ -206,6 +274,91 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 		RGPatterns: unique(execEngine.CollectedRgPatterns),
 		Meta:       meta,
 	}, errors.New("max turns reached without getting an answer")
+}
+
+func sendAndParse(
+	ctx context.Context,
+	client Client,
+	apiKey, jwt string,
+	messages []Message,
+	toolDefs string,
+	timeout time.Duration,
+) (string, *ToolCall, error) {
+	data, err := client.Stream(ctx, apiKey, jwt, messages, toolDefs, timeout)
+	if err != nil {
+		return "", nil, err
+	}
+	return client.ParseResponse(data)
+}
+
+func buildInvalidArgumentRecovery(
+	client Client,
+	apiKey, jwt string,
+	messages []Message,
+	toolDefs string,
+	state *trimState,
+) (candidate []Message, beforeBytes, afterBytes int, ok bool, err error) {
+	if !containsToolResult(messages) {
+		return nil, 0, 0, false, nil
+	}
+	beforeBytes, err = client.RequestSize(apiKey, jwt, messages, toolDefs)
+	if err != nil {
+		return nil, 0, 0, false, err
+	}
+	candidate = append([]Message(nil), messages...)
+	if !trimMessages(&candidate, state) || !hasValidLatestToolPair(candidate) || !messagesValidUTF8(candidate) {
+		return nil, beforeBytes, 0, false, nil
+	}
+	afterBytes, err = client.RequestSize(apiKey, jwt, candidate, toolDefs)
+	if err != nil {
+		return nil, beforeBytes, 0, false, err
+	}
+	if afterBytes >= beforeBytes || afterBytes > MaxRequestProtoBytes {
+		return nil, beforeBytes, afterBytes, false, nil
+	}
+	return candidate, beforeBytes, afterBytes, true, nil
+}
+
+func containsToolResult(messages []Message) bool {
+	for _, message := range messages {
+		if message.Role == 4 && message.RefCallID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasValidLatestToolPair(messages []Message) bool {
+	lastResult := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == 4 && messages[i].RefCallID != "" {
+			lastResult = i
+			break
+		}
+	}
+	if lastResult < 0 {
+		return false
+	}
+	ref := messages[lastResult].RefCallID
+	for i := lastResult - 1; i >= 0; i-- {
+		if messages[i].Role == 2 && messages[i].ToolCallID == ref {
+			return messages[i].ToolName != "" && json.Valid([]byte(messages[i].ToolArgsJSON))
+		}
+	}
+	return false
+}
+
+func messagesValidUTF8(messages []Message) bool {
+	for _, message := range messages {
+		if !utf8.ValidString(message.Content) ||
+			!utf8.ValidString(message.ToolCallID) ||
+			!utf8.ValidString(message.ToolName) ||
+			!utf8.ValidString(message.ToolArgsJSON) ||
+			!utf8.ValidString(message.RefCallID) {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeOptions(opts Options) Options {
@@ -265,26 +418,167 @@ func normalizeOptions(opts Options) Options {
 	return opts
 }
 
-func decodeCommands(args map[string]any) map[string]executor.Command {
-	commands := map[string]executor.Command{}
-	for key, value := range args {
-		if !strings.HasPrefix(key, "command") {
-			continue
-		}
-		data, err := json.Marshal(value)
-		if err != nil {
-			continue
-		}
-		var command executor.Command
-		if err := json.Unmarshal(data, &command); err != nil {
-			continue
-		}
-		if command.Type == "" {
-			continue
-		}
-		commands[key] = command
+func decodeCommands(args map[string]any, maxCommands int) decodedCommandBatch {
+	batch := decodedCommandBatch{ArgsJSON: "{}"}
+	type candidate struct {
+		name  string
+		index int
+		value any
 	}
-	return commands
+	candidates := make([]candidate, 0, len(args))
+	for name, value := range args {
+		match := commandIndexRe.FindStringSubmatch(name)
+		if len(match) != 2 {
+			batch.Rejected++
+			continue
+		}
+		index, err := strconv.Atoi(match[1])
+		if err != nil || index > maxCommands {
+			batch.Rejected++
+			continue
+		}
+		candidates = append(candidates, candidate{name: name, index: index, value: value})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].index < candidates[j].index })
+	if len(candidates) == 0 || candidates[0].index != 1 {
+		batch.Rejected += len(candidates)
+		return batch
+	}
+
+	for i, candidate := range candidates {
+		command, err := decodeCommand(candidate.value)
+		if err != nil {
+			batch.Rejected++
+			if candidate.index == 1 {
+				batch.Rejected += len(candidates) - i - 1
+				batch.Commands = nil
+				return batch
+			}
+			continue
+		}
+		trial := append(append([]executor.NamedCommand(nil), batch.Commands...), executor.NamedCommand{
+			Name:    candidate.name,
+			Command: command,
+		})
+		argsJSON, err := marshalValidatedCommands(trial)
+		if err != nil || len(argsJSON) > maxToolArgsJSONBytes {
+			batch.Rejected += len(candidates) - i
+			break
+		}
+		batch.Commands = trial
+		batch.ArgsJSON = argsJSON
+	}
+	return batch
+}
+
+func decodeCommand(value any) (executor.Command, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return executor.Command{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var command executor.Command
+	if err := decoder.Decode(&command); err != nil {
+		return executor.Command{}, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return executor.Command{}, err
+	}
+	if err := validateCommandFields(command.Type, fields); err != nil {
+		return executor.Command{}, err
+	}
+	normalizeCommand(&command)
+	if err := validateCommand(command); err != nil {
+		return executor.Command{}, err
+	}
+	return command, nil
+}
+
+func validateCommandFields(commandType string, fields map[string]json.RawMessage) error {
+	allowedByType := map[string]map[string]bool{
+		"rg":       {"type": true, "pattern": true, "path": true, "include": true, "exclude": true},
+		"readfile": {"type": true, "file": true, "start_line": true, "end_line": true},
+		"tree":     {"type": true, "path": true, "levels": true},
+		"ls":       {"type": true, "path": true, "long_format": true, "all": true},
+		"glob":     {"type": true, "pattern": true, "path": true, "type_filter": true},
+	}
+	allowed, ok := allowedByType[commandType]
+	if !ok {
+		return fmt.Errorf("unsupported command type")
+	}
+	for field := range fields {
+		if !allowed[field] {
+			return fmt.Errorf("field %q is not allowed for %s", field, commandType)
+		}
+	}
+	return nil
+}
+
+func normalizeCommand(command *executor.Command) {
+	command.Type, _ = textutil.NormalizeUTF8(command.Type)
+	command.Pattern, _ = textutil.NormalizeUTF8(command.Pattern)
+	command.Path, _ = textutil.NormalizeUTF8(command.Path)
+	command.File, _ = textutil.NormalizeUTF8(command.File)
+	command.TypeFilter, _ = textutil.NormalizeUTF8(command.TypeFilter)
+	for i := range command.Include {
+		command.Include[i], _ = textutil.NormalizeUTF8(command.Include[i])
+	}
+	for i := range command.Exclude {
+		command.Exclude[i], _ = textutil.NormalizeUTF8(command.Exclude[i])
+	}
+}
+
+func validateCommand(command executor.Command) error {
+	for _, value := range []string{command.Type, command.Pattern, command.Path, command.File, command.TypeFilter} {
+		if len(value) > maxCommandStringBytes {
+			return fmt.Errorf("command string exceeds byte budget")
+		}
+	}
+	for _, values := range [][]string{command.Include, command.Exclude} {
+		if len(values) > maxCommandListItems {
+			return fmt.Errorf("command list exceeds item budget")
+		}
+		for _, value := range values {
+			if len(value) > maxCommandListItemBytes {
+				return fmt.Errorf("command list item exceeds byte budget")
+			}
+		}
+	}
+	switch command.Type {
+	case "rg":
+		if command.Pattern == "" || command.Path == "" {
+			return fmt.Errorf("rg requires pattern and path")
+		}
+	case "readfile":
+		if command.File == "" {
+			return fmt.Errorf("readfile requires file")
+		}
+	case "tree", "ls":
+		if command.Path == "" {
+			return fmt.Errorf("%s requires path", command.Type)
+		}
+	case "glob":
+		if command.Pattern == "" || command.Path == "" {
+			return fmt.Errorf("glob requires pattern and path")
+		}
+		if command.TypeFilter != "" && command.TypeFilter != "file" && command.TypeFilter != "directory" && command.TypeFilter != "all" {
+			return fmt.Errorf("invalid glob type_filter")
+		}
+	default:
+		return fmt.Errorf("unsupported command type")
+	}
+	return nil
+}
+
+func marshalValidatedCommands(commands []executor.NamedCommand) (string, error) {
+	args := make(map[string]executor.Command, len(commands))
+	for _, command := range commands {
+		args[command.Name] = command.Command
+	}
+	data, err := json.Marshal(args)
+	return string(data), err
 }
 
 func unique(values []string) []string {

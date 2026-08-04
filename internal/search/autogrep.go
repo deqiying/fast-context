@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
 
 // Noise globs excluded from grep keyword expansion (upstream 1.5.2: bundler
@@ -53,7 +55,7 @@ var grepNoiseDirGlobs = []string{
 // autoGrepFiles runs collected rg patterns locally to supplement files the
 // remote model missed. Zero API calls. Results are sorted by how many
 // patterns hit each file.
-func autoGrepFiles(rgPath string, patterns []string, projectRoot string, excludePaths []string, existingPaths []string, maxPerPattern, maxTotal int) []ResultFile {
+func autoGrepFiles(rgPath string, patterns []string, projectRoot string, policy *pathfilter.Policy, existingPaths []string, maxPerPattern, maxTotal int) []ResultFile {
 	if rgPath == "" || maxTotal <= 0 {
 		return nil
 	}
@@ -85,9 +87,13 @@ func autoGrepFiles(rgPath string, patterns []string, projectRoot string, exclude
 			break
 		}
 		args := []string{"-l", "--max-count", "10", "-S"}
-		for _, ex := range excludePaths {
-			for _, expanded := range expandExcludeGlobsForRg(ex) {
-				args = append(args, "--glob", "!"+expanded)
+		if policy != nil {
+			globFlag := "--glob"
+			if policy.CaseInsensitive() {
+				globFlag = "--iglob"
+			}
+			for _, exclude := range policy.RGGlobs(projectRoot) {
+				args = append(args, globFlag, "!"+exclude)
 			}
 		}
 		args = append(args, noiseArgs...)
@@ -107,6 +113,9 @@ func autoGrepFiles(rgPath string, patterns []string, projectRoot string, exclude
 				continue
 			}
 			if seen[full] {
+				continue
+			}
+			if policy != nil && policy.Excluded(full) {
 				continue
 			}
 			rel, err := filepath.Rel(projectRoot, full)
@@ -141,18 +150,6 @@ func autoGrepFiles(rgPath string, patterns []string, projectRoot string, exclude
 		found = append(found, fileInfo[full])
 	}
 	return found
-}
-
-func expandExcludeGlobsForRg(pattern string) []string {
-	normalized := strings.TrimSpace(strings.ReplaceAll(pattern, "\\", "/"))
-	if normalized == "" {
-		return nil
-	}
-	expanded := []string{normalized}
-	if !strings.HasPrefix(normalized, "**/") && !strings.HasPrefix(normalized, "/") {
-		expanded = append(expanded, "**/"+normalized)
-	}
-	return expanded
 }
 
 func runRGWithTimeout(rgPath string, args []string, timeout time.Duration) ([]byte, error) {

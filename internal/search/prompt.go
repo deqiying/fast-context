@@ -169,9 +169,10 @@ func buildToolDefinitions(maxCommands int) string {
 				"name":        "restricted_exec",
 				"description": "Execute restricted commands (rg, readfile, tree, ls, glob) in parallel.",
 				"parameters": map[string]any{
-					"type":       "object",
-					"properties": props,
-					"required":   []string{"command1"},
+					"type":                 "object",
+					"properties":           props,
+					"required":             []string{"command1"},
+					"additionalProperties": false,
 				},
 			},
 		},
@@ -203,6 +204,7 @@ func commandSchema(n int) map[string]any {
 		"description": fmt.Sprintf("Command %d to execute. Must be one of: rg, readfile, tree, ls, glob.", n),
 		"oneOf": []map[string]any{
 			{
+				"type": "object",
 				"properties": map[string]any{
 					"type":    map[string]any{"type": "string", "const": "rg"},
 					"pattern": map[string]any{"type": "string"},
@@ -210,42 +212,51 @@ func commandSchema(n int) map[string]any {
 					"include": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					"exclude": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				},
-				"required": []string{"type", "pattern", "path"},
+				"required":             []string{"type", "pattern", "path"},
+				"additionalProperties": false,
 			},
 			{
+				"type": "object",
 				"properties": map[string]any{
 					"type":       map[string]any{"type": "string", "const": "readfile"},
 					"file":       map[string]any{"type": "string"},
 					"start_line": map[string]any{"type": "integer"},
 					"end_line":   map[string]any{"type": "integer"},
 				},
-				"required": []string{"type", "file"},
+				"required":             []string{"type", "file"},
+				"additionalProperties": false,
 			},
 			{
+				"type": "object",
 				"properties": map[string]any{
 					"type":   map[string]any{"type": "string", "const": "tree"},
 					"path":   map[string]any{"type": "string"},
 					"levels": map[string]any{"type": "integer"},
 				},
-				"required": []string{"type", "path"},
+				"required":             []string{"type", "path"},
+				"additionalProperties": false,
 			},
 			{
+				"type": "object",
 				"properties": map[string]any{
 					"type":        map[string]any{"type": "string", "const": "ls"},
 					"path":        map[string]any{"type": "string"},
 					"long_format": map[string]any{"type": "boolean"},
 					"all":         map[string]any{"type": "boolean"},
 				},
-				"required": []string{"type", "path"},
+				"required":             []string{"type", "path"},
+				"additionalProperties": false,
 			},
 			{
+				"type": "object",
 				"properties": map[string]any{
 					"type":        map[string]any{"type": "string", "const": "glob"},
 					"pattern":     map[string]any{"type": "string"},
 					"path":        map[string]any{"type": "string"},
 					"type_filter": map[string]any{"type": "string", "enum": []string{"file", "directory", "all"}},
 				},
-				"required": []string{"type", "pattern", "path"},
+				"required":             []string{"type", "pattern", "path"},
+				"additionalProperties": false,
 			},
 		},
 	}

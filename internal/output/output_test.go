@@ -64,3 +64,17 @@ func TestErrorFormatsPreserveStableCode(t *testing.T) {
 		t.Fatalf("unexpected structured error: %#v", structured)
 	}
 }
+
+func TestErrorFormatsPreserveRemoteInvalidArgument(t *testing.T) {
+	err := codedError{code: "invalid_argument", err: errors.New("invalid_argument: internal error (trace ID: fixture)")}
+	result := search.Result{Meta: search.Meta{ErrorCode: "invalid_argument", ContextTrimmed: true}}
+	formatted := FormatError(err, search.Options{}, result)
+	if !strings.Contains(formatted, "error_type=invalid_argument") || !strings.Contains(formatted, "server-side diagnostics") {
+		t.Fatalf("unexpected formatted error:\n%s", formatted)
+	}
+	structured := ErrorJSON(err, result)
+	errorObject := structured["error"].(map[string]any)
+	if errorObject["code"] != "invalid_argument" {
+		t.Fatalf("unexpected structured error: %#v", structured)
+	}
+}

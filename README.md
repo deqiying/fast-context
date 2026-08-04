@@ -51,12 +51,12 @@ fast-context skills show fast-context --format content
 
 1. **Bootstrap phase** (default on): a cheap two-turn pre-pass over an L1 tree collects ripgrep patterns and hotspot directories.
 2. **Hotspot repo map** (`bootstrap_hotspot`): a shallow global tree plus deeper subtrees for top directories scored by BM25F, probe grep, Git RFM, and file aggregation, fused with RRF. `--repo-map-mode classic` restores the plain adaptive tree.
-3. **Multi-turn search** with smart context trimming and a 320 KB preflight trim.
+3. **Multi-turn search** with smart context trimming, UTF-8-safe tool results, and a final 320 KB uncompressed protobuf gate before HTTP.
 4. **No-result retry**: up to two narrower project roots are tried automatically when no path can be parsed.
 5. **Grep keyword expansion**: collected patterns run locally to supplement missed files without another API call.
 6. **Optional snippets**: `--include-snippets` adds line-numbered code under a 45 KB output budget.
 
-`--tree-depth 0` selects depth from project size: fewer than 500 entries uses 4, up to 5000 uses 3, and larger trees use 2.
+`--tree-depth 0` selects project-size auto depth only in `classic` mode: fewer than 500 entries uses 4, up to 5000 uses 3, and larger trees use 2. In the default `bootstrap_hotspot` mode, the global map uses `FC_BOOTSTRAP_TREE_DEPTH`, selected hotspot subtrees use `FC_HOTSPOT_TREE_DEPTH`, and a requested depth may raise the hotspot depth. JSON `meta.tree_depth` is the global-map depth; `meta.hotspot_depth` is the hotspot depth.
 
 ## Configuration
 
@@ -94,7 +94,7 @@ Blank values do not claim a priority slot. `FAST_CONTEXT_KEY` and the local conf
 | `FC_HOTSPOT_MAX_BYTES` | 122880 | Repository-map budget |
 | `FC_INCLUDE_SNIPPETS` | `false` | Default snippet behavior |
 | `FC_RESULT_MAX_LINES` | 50 | Restricted-tool result line cap |
-| `FC_LINE_MAX_CHARS` | 250 | Per-line character cap |
+| `FC_LINE_MAX_CHARS` | 250 | Per-line UTF-8 byte cap; truncation never splits a rune |
 | `FC_RG_PATH` | — | Explicit ripgrep binary path |
 | `FAST_CONTEXT_DEBUG` | — | `1` or `true` prints progress to stderr |
 | `FAST_CONTEXT_KEY` | — | Explicit fast-context key; highest credential priority |
@@ -107,8 +107,10 @@ The npm launcher sets `FC_RG_PATH` from `@vscode/ripgrep` only when the user has
 
 - `search` sends the query, repository map, and requested restricted-tool results to Windsurf. Do not use it when external transmission is not authorized.
 - `--include-snippets` is off by default.
-- The local executor accepts only structured `rg`, `readfile`, `tree`, `ls`, and `glob` commands.
+- The local executor accepts only structured `rg`, `readfile`, `tree`, `ls`, and `glob` commands. `--max-commands` is enforced locally; model output cannot raise the limit.
+- Effective `--exclude` patterns are anchored to the original project root and apply to repo maps, bootstrap/hotspot scoring, retry probes, all restricted-tool reads, grep expansion, final files, and snippets.
 - Remote paths are mapped through `/codebase` and checked against project-root and symlink escape.
+- Valid structured remote error codes such as `invalid_argument` are preserved instead of being reduced to `UNKNOWN`; raw response bodies are never emitted.
 - `RIPGREP_CONFIG_PATH` is cleared for deterministic searches.
 - API keys are redacted; the npm launcher does not inspect credentials or `.env` files.
 - Runtime commands never discover Windsurf/Devin `state.vscdb`. `key extract --path <state.vscdb>` is an explicit diagnostic action that copies the selected database to a temporary snapshot and normally removes it before returning; abnormal process termination can leave that snapshot behind.

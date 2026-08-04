@@ -194,6 +194,8 @@ func FormatError(err error, opts search.Options, result search.Result) string {
 		b.WriteString("[hint] Authentication error. The key may be expired or revoked. Run `fast-context doctor --format json`, set FAST_CONTEXT_KEY, repair $HOME/.config/fast-context/config.json, or set WINDSURF_API_KEY. To inspect a legacy database, run `fast-context key extract --path <state.vscdb>` and configure the extracted key explicitly.\n")
 	case "RATE_LIMITED":
 		b.WriteString("[hint] Rate limited. Wait a moment and retry.\n")
+	case "invalid_argument":
+		b.WriteString("[hint] The remote service rejected the request after bounded local recovery. Keep the trace ID and use it for server-side diagnostics; do not retry in a loop.\n")
 	default:
 		b.WriteString("[hint] Run `fast-context doctor` to check credentials, ripgrep, and project path.\n")
 	}

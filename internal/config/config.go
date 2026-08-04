@@ -25,7 +25,8 @@ const (
 
 // DefaultExcludePaths mirrors upstream 1.5.2 DEFAULT_EXCLUDE_PATHS: directories
 // and patterns that are almost never source code. Always applied on top of the
-// user-provided exclude list for repo map, bootstrap, and local grep expansion.
+// user-provided exclude list before the original-root policy is shared across
+// repo maps, local tools, retries, and final result filtering.
 var DefaultExcludePaths = []string{
 	// dependency dirs
 	"node_modules",

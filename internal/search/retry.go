@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/deqiying/fast-context/internal/config"
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
 
 var retryQueryStopwords = map[string]bool{}
@@ -43,7 +43,7 @@ func retryQueryTokens(query string) []string {
 	return out
 }
 
-func safeExistingDir(root, dirName string) string {
+func safeExistingDir(root, dirName string, policy *pathfilter.Policy) string {
 	if dirName == "" || strings.Contains(dirName, "..") ||
 		strings.ContainsAny(dirName, `/\`) || filepath.IsAbs(dirName) {
 		return ""
@@ -57,10 +57,13 @@ func safeExistingDir(root, dirName string) string {
 	if err != nil || !st.IsDir() {
 		return ""
 	}
+	if policy != nil && policy.Excluded(abs) {
+		return ""
+	}
 	return abs
 }
 
-func probeRetryDirScore(rgPath, absDir string, tokens []string) int {
+func probeRetryDirScore(rgPath, absDir string, tokens []string, policy *pathfilter.Policy) int {
 	if len(tokens) == 0 || rgPath == "" {
 		return 0
 	}
@@ -69,9 +72,13 @@ func probeRetryDirScore(rgPath, absDir string, tokens []string) int {
 		escaped[i] = regexp.QuoteMeta(t)
 	}
 	args := []string{"-l", "--max-count", "20", "-S"}
-	for _, ex := range config.MergeExcludePaths(nil) {
-		for _, expanded := range expandExcludeGlobsForRg(ex) {
-			args = append(args, "--glob", "!"+expanded)
+	if policy != nil {
+		globFlag := "--glob"
+		if policy.CaseInsensitive() {
+			globFlag = "--iglob"
+		}
+		for _, pattern := range policy.RGGlobs(absDir) {
+			args = append(args, globFlag, "!"+pattern)
 		}
 	}
 	args = append(args, "--", strings.Join(escaped, "|"), absDir)
@@ -81,7 +88,7 @@ func probeRetryDirScore(rgPath, absDir string, tokens []string) int {
 	}
 	count := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line != "" {
+		if line != "" && (policy == nil || !policy.Excluded(line)) {
 			count++
 		}
 	}
@@ -96,8 +103,8 @@ type retryCandidate struct {
 	hotScore   int
 }
 
-func scoreRetryCandidate(rgPath, root, dirName string, tokens []string, hotDirSet map[string]bool) *retryCandidate {
-	abs := safeExistingDir(root, dirName)
+func scoreRetryCandidate(rgPath, root, dirName string, tokens []string, hotDirSet map[string]bool, policy *pathfilter.Policy) *retryCandidate {
+	abs := safeExistingDir(root, dirName, policy)
 	if abs == "" {
 		return nil
 	}
@@ -122,7 +129,7 @@ func scoreRetryCandidate(rgPath, root, dirName string, tokens []string, hotDirSe
 	if hotDirSet[dirName] {
 		hotScore = 2
 	}
-	probeScore := probeRetryDirScore(rgPath, abs, tokens)
+	probeScore := probeRetryDirScore(rgPath, abs, tokens, policy)
 	return &retryCandidate{
 		dirName:    dirName,
 		abs:        abs,
@@ -136,7 +143,7 @@ func scoreRetryCandidate(rgPath, root, dirName string, tokens []string, hotDirSe
 // roots to retry when the model returned no parseable files: hot dirs from
 // the first pass, real top-level dirs, and common source-root hints, ranked
 // by local probe hits + name/hint/hot-dir affinity.
-func selectNoResultRetryProjectRoots(rgPath, projectRoot string, hotDirs []string, maxRetries int, query string, listTopLevelDirs func(string, []string) []string) []string {
+func selectNoResultRetryProjectRoots(rgPath, projectRoot string, hotDirs []string, maxRetries int, query string, policy *pathfilter.Policy, listTopLevelDirs func(string, *pathfilter.Policy) []string) []string {
 	root, err := filepath.Abs(projectRoot)
 	if err != nil {
 		return nil
@@ -149,13 +156,13 @@ func selectNoResultRetryProjectRoots(rgPath, projectRoot string, hotDirs []strin
 
 	var candidateNames []string
 	candidateNames = append(candidateNames, hotDirs...)
-	candidateNames = append(candidateNames, listTopLevelDirs(root, config.MergeExcludePaths(nil))...)
+	candidateNames = append(candidateNames, listTopLevelDirs(root, policy)...)
 	candidateNames = append(candidateNames, retryFallbackDirHints...)
 	candidateNames = lastUnique(candidateNames, len(candidateNames))
 
 	var candidates []*retryCandidate
 	for _, dirName := range candidateNames {
-		if c := scoreRetryCandidate(rgPath, root, dirName, tokens, hotDirSet); c != nil {
+		if c := scoreRetryCandidate(rgPath, root, dirName, tokens, hotDirSet, policy); c != nil {
 			candidates = append(candidates, c)
 		}
 	}

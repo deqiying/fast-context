@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
 
 func TestBuildAutoDepth(t *testing.T) {
@@ -70,11 +72,50 @@ func TestBuildExcludes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m := Build(root, 2, []string{"node_modules"})
+	policy, err := pathfilter.New(root, []string{"node_modules"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Build(root, 2, policy)
 	if strings.Contains(m.Tree, "node_modules") {
 		t.Fatalf("exclude failed:\n%s", m.Tree)
 	}
 	if !strings.Contains(m.Tree, "main.go") {
 		t.Fatalf("missing main.go:\n%s", m.Tree)
+	}
+}
+
+func TestBuildOptimizedExcludesNestedHotspotPaths(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("auth/login.go", "package auth\nfunc Login() {}\n")
+	write("auth/private/secret_login.go", "package private\nfunc SecretLogin() {}\n")
+	policy, err := pathfilter.New(root, []string{"auth/private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := BuildOptimized("login authentication", root, 3, policy, OptimizerOptions{
+		Mode:               "bootstrap_hotspot",
+		BootstrapTreeDepth: 1,
+		HotspotTopK:        1,
+		HotspotTreeDepth:   3,
+		MaxBytes:           120 * 1024,
+	}, nil, nil)
+	if strings.Contains(m.Tree, "private") || strings.Contains(m.Tree, "secret_login.go") {
+		t.Fatalf("nested excluded hotspot path leaked:\n%s", m.Tree)
+	}
+	if !strings.Contains(m.Tree, "login.go") {
+		t.Fatalf("included hotspot file missing:\n%s", m.Tree)
+	}
+	if subtree := BuildSubtree(root, "auth/private", 2, policy); subtree != "" {
+		t.Fatalf("excluded subtree root leaked: %q", subtree)
 	}
 }

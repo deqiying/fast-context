@@ -2,31 +2,34 @@ package search
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/deqiying/fast-context/internal/executor"
+	"github.com/deqiying/fast-context/internal/pathfilter"
 	"github.com/deqiying/fast-context/internal/repomap"
+	"github.com/deqiying/fast-context/internal/textutil"
 )
 
 // runBootstrapPhase ports upstream _runBootstrapPhase: a cheap shallow-tree
 // pre-pass that collects rg patterns and hot directories for the optimizer.
 // Best-effort — any failure just returns whatever was collected so far.
-func runBootstrapPhase(ctx context.Context, opts Options, client Client, apiKey, jwt, projectRoot string, excludePaths []string, progress func(string)) *repomap.BootstrapHints {
+func runBootstrapPhase(ctx context.Context, opts Options, client Client, apiKey, jwt, projectRoot string, policy *pathfilter.Policy, progress func(string)) *repomap.BootstrapHints {
 	log := func(msg string) { progress("[bootstrap] " + msg) }
 	hints := &repomap.BootstrapHints{}
 
-	miniMap := repomap.Build(projectRoot, opts.BootstrapTreeDepth, excludePaths)
+	miniMap := repomap.Build(projectRoot, opts.BootstrapTreeDepth, policy)
 	systemPrompt := buildBootstrapPrompt(opts.BootstrapMaxTurns, opts.BootstrapMaxCommands)
 	userContent := fmt.Sprintf("Problem Statement: %s\n\nRepo Map (tree -L %d /codebase):\n```text\n%s\n```", opts.Query, miniMap.Depth, miniMap.Tree)
+	userContent, _ = textutil.NormalizeUTF8(userContent)
 
 	messages := []Message{
 		{Role: 5, Content: systemPrompt},
 		{Role: 1, Content: userContent},
 	}
 	toolDefs := buildToolDefinitions(opts.BootstrapMaxCommands)
-	execEngine, err := executor.New(projectRoot)
+	execEngine, err := executor.NewWithPolicy(projectRoot, policy)
 	if err != nil {
 		return finalizeHints(hints)
 	}
@@ -43,29 +46,37 @@ func runBootstrapPhase(ctx context.Context, opts Options, client Client, apiKey,
 			break
 		}
 
-		commands := decodeCommands(toolInfo.Args)
-		for _, cmd := range commands {
-			if cmd.Type == "rg" && cmd.Pattern != "" {
+		batch := decodeCommands(toolInfo.Args, opts.BootstrapMaxCommands)
+		log(fmt.Sprintf("Tool batch: accepted=%d rejected=%d", len(batch.Commands), batch.Rejected))
+		for _, named := range batch.Commands {
+			cmd := named.Command
+			if cmd.Type == "rg" && cmd.Pattern != "" && (policy == nil || !policy.ExcludedVirtual(projectRoot, cmd.Path)) {
 				hints.RGPatterns = append(hints.RGPatterns, cmd.Pattern)
 			}
 			if cmd.Type == "tree" && cmd.Path != "" {
 				if top := extractTopDirFromCodebasePath(cmd.Path); top != "" {
-					hints.HotDirs = append(hints.HotDirs, top)
+					if policy == nil || !policy.Excluded(filepath.Join(projectRoot, filepath.FromSlash(top))) {
+						hints.HotDirs = append(hints.HotDirs, top)
+					}
 				}
 			}
 		}
 
 		callID := randomID()
-		argsJSON, _ := json.Marshal(toolInfo.Args)
-		results := execEngine.ExecToolCall(ctx, commands)
+		batchResult := execEngine.ExecToolCall(ctx, batch.Commands)
+		thinking, _ = textutil.TruncateUTF8Bytes(
+			thinking,
+			maxAssistantThinkingBytes,
+			"\n...[assistant content truncated]...",
+		)
 		messages = append(messages, Message{
 			Role:         2,
 			Content:      thinking,
 			ToolCallID:   callID,
 			ToolName:     "restricted_exec",
-			ToolArgsJSON: string(argsJSON),
+			ToolArgsJSON: batch.ArgsJSON,
 		})
-		messages = append(messages, Message{Role: 4, Content: results, RefCallID: callID})
+		messages = append(messages, Message{Role: 4, Content: batchResult.Text, RefCallID: callID})
 	}
 
 	return finalizeHints(hints)

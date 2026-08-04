@@ -13,7 +13,7 @@ Treat `fast-context search` as the core semantic-discovery external-service oper
 
 Once this Skill is loaded and `fast-context doctor --project <target-project> --format json` reports a successful preflight, treat that as permission to run `search`; do not request separate per-search authorization. An explicit user instruction forbidding external transmission still takes precedence.
 
-- Exclude sensitive, generated, or irrelevant directories before searching.
+- Exclude sensitive, generated, or irrelevant directories before searching. Effective excludes constrain repo maps, bootstrap/hotspot discovery, retries, restricted-tool reads, final files, and snippets.
 - Keep `--include-snippets` off by default. Enable it only when the code is safe to transmit and snippets materially reduce follow-up reads.
 - Never print API keys, JWTs, npm tokens, full credential candidates, or private diagnostic paths in user-facing output.
 
@@ -75,7 +75,9 @@ fast-context search "where is user login authentication and JWT validation handl
   --format json
 ```
 
-Add focused `--exclude` values for noisy directories. Narrow `--project` after a broad or empty result. Only increase `--max-turns` when another search round is likely to expose a real call path.
+Add focused `--exclude` values for noisy directories; matching paths cannot be reintroduced by restricted tools. `--max-commands` is a locally enforced execution limit. Narrow `--project` after a broad or empty result. Only increase `--max-turns` when another search round is likely to expose a real call path.
+
+`--tree-depth 0` selects project-size auto depth in `classic` mode. With the default `bootstrap_hotspot`, the global map and hotspot subtrees use their bootstrap/hotspot depth settings, and JSON reports them separately as `meta.tree_depth` and `meta.hotspot_depth`.
 
 Treat returned files, line ranges, and `rg_patterns` as candidates, not proof. Read the indicated source and use exact `rg` references, tests, builds, or runtime evidence before editing or answering.
 
@@ -83,7 +85,7 @@ Treat returned files, line ranges, and `rg_patterns` as candidates, not proof. R
 
 If search fails because of network, TLS, authentication, rate limits, protocol drift, or service availability:
 
-1. Report the concrete error category without exposing credentials.
+1. Report the concrete error category, preserving a recognized remote code such as `invalid_argument`, without exposing credentials or the raw response body.
 2. Use an installed local `codesearch` only when it already has a usable index.
 3. If a new index is needed, start it in the background and do not wait for it in the current task.
 4. Continue with `rg`, direct file reads, and repository-native tests when no ready semantic fallback exists.

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
 
 const (
@@ -185,10 +187,17 @@ type Profile struct {
 	tokHeaders  []string
 }
 
-func extractMetadata(dirPath string) string {
+func extractMetadata(dirPath string, policy *pathfilter.Policy) string {
 	var metadata []string
+	readFile := func(name string) ([]byte, error) {
+		path := filepath.Join(dirPath, name)
+		if policy != nil && policy.Excluded(path) {
+			return nil, os.ErrNotExist
+		}
+		return os.ReadFile(path)
+	}
 
-	if data, err := os.ReadFile(filepath.Join(dirPath, "package.json")); err == nil {
+	if data, err := readFile("package.json"); err == nil {
 		var pkg struct {
 			Name         string         `json:"name"`
 			Description  string         `json:"description"`
@@ -208,13 +217,13 @@ func extractMetadata(dirPath string) string {
 			}
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(dirPath, "go.mod")); err == nil {
+	if data, err := readFile("go.mod"); err == nil {
 		if m := regexp.MustCompile(`module\s+(\S+)`).FindStringSubmatch(string(data)); m != nil {
 			metadata = append(metadata, TokenizePath(m[1])...)
 		}
 	}
 	for _, tomlName := range []string{"Cargo.toml", "pyproject.toml"} {
-		if data, err := os.ReadFile(filepath.Join(dirPath, tomlName)); err == nil {
+		if data, err := readFile(tomlName); err == nil {
 			if m := regexp.MustCompile(`name\s*=\s*"([^"]+)"`).FindStringSubmatch(string(data)); m != nil {
 				metadata = append(metadata, TokenizePath(m[1])...)
 			}
@@ -260,15 +269,11 @@ func extractFileHeaders(filePath string) string {
 
 // BuildProfile walks a top-level directory (up to maxDepth levels) and builds
 // its scoring profile. The CLI is one-shot, so no TTL cache is needed.
-func BuildProfile(projectRoot, dirName string, excludePaths []string, maxDepth int) *Profile {
+func BuildProfile(projectRoot, dirName string, policy *pathfilter.Policy, maxDepth int) *Profile {
 	if maxDepth <= 0 {
 		maxDepth = 3
 	}
 	profile := &Profile{DirName: dirName}
-	excludeSet := map[string]bool{}
-	for _, p := range excludePaths {
-		excludeSet[p] = true
-	}
 
 	var pathTokens []string
 	var headers []string
@@ -283,13 +288,13 @@ func BuildProfile(projectRoot, dirName string, excludePaths []string, maxDepth i
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			if defaultExcludes[name] || excludeSet[name] {
+			fullPath := filepath.Join(currentPath, name)
+			if defaultExcludes[name] || (policy != nil && policy.Excluded(fullPath)) {
 				continue
 			}
 			if strings.HasPrefix(name, ".") && name != ".github" {
 				continue
 			}
-			fullPath := filepath.Join(currentPath, name)
 			rel, err := filepath.Rel(projectRoot, fullPath)
 			if err != nil {
 				continue
@@ -312,7 +317,7 @@ func BuildProfile(projectRoot, dirName string, excludePaths []string, maxDepth i
 	}
 	walk(filepath.Join(projectRoot, dirName), 1)
 
-	profile.Metadata = extractMetadata(filepath.Join(projectRoot, dirName))
+	profile.Metadata = extractMetadata(filepath.Join(projectRoot, dirName), policy)
 	profile.PathText = strings.Join(pathTokens, " ")
 	profile.Headers = strings.Join(headers, " ")
 
@@ -418,7 +423,7 @@ func selectProbeTerms(queryTerms []string, idf map[string]float64, maxTerms int)
 	return out
 }
 
-func probeGrep(rgPath, projectRoot string, topDirs, probeTerms, excludePaths []string) map[string]int {
+func probeGrep(rgPath, projectRoot string, topDirs, probeTerms []string, policy *pathfilter.Policy) map[string]int {
 	dirHits := map[string]int{}
 	for _, d := range topDirs {
 		dirHits[d] = 0
@@ -426,27 +431,28 @@ func probeGrep(rgPath, projectRoot string, topDirs, probeTerms, excludePaths []s
 	if len(probeTerms) == 0 || rgPath == "" {
 		return dirHits
 	}
-	excludeSet := map[string]bool{}
-	var excludeList []string
-	appendExclude := func(p string) {
-		if p != "" && !excludeSet[p] {
-			excludeSet[p] = true
-			excludeList = append(excludeList, p)
-		}
-	}
-	for _, p := range excludePaths {
-		appendExclude(p)
-	}
-	for p := range defaultExcludes {
-		appendExclude(p)
-	}
-	sort.Strings(excludeList)
-
 	args := []string{"-l", "--hidden", "-S", "-F"}
 	for _, t := range probeTerms {
 		args = append(args, "-e", t)
 	}
-	args = append(args, "-g", "!{"+strings.Join(excludeList, ",")+"}", projectRoot)
+	if policy != nil {
+		globFlag := "-g"
+		if policy.CaseInsensitive() {
+			globFlag = "--iglob"
+		}
+		for _, pattern := range policy.RGGlobs(projectRoot) {
+			args = append(args, globFlag, "!"+pattern)
+		}
+	}
+	defaultNames := make([]string, 0, len(defaultExcludes))
+	for name := range defaultExcludes {
+		defaultNames = append(defaultNames, name)
+	}
+	sort.Strings(defaultNames)
+	for _, name := range defaultNames {
+		args = append(args, "-g", "!"+name, "-g", "!**/"+name)
+	}
+	args = append(args, projectRoot)
 
 	cmd := exec.Command(rgPath, args...)
 	cmd.Env = append(os.Environ(), "RIPGREP_CONFIG_PATH=")
@@ -456,6 +462,9 @@ func probeGrep(rgPath, projectRoot string, topDirs, probeTerms, excludePaths []s
 	}
 	for _, file := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if file == "" {
+			continue
+		}
+		if policy != nil && policy.Excluded(file) {
 			continue
 		}
 		rel, err := filepath.Rel(projectRoot, file)
@@ -693,7 +702,7 @@ type gitRFMEntry struct {
 	linesChanged int
 }
 
-func computeGitRFM(projectRoot string, topDirs []string) []gitRFMEntry {
+func computeGitRFM(projectRoot string, topDirs []string, policy *pathfilter.Policy) []gitRFMEntry {
 	const (
 		windowDays   = 180
 		halfLifeDays = 30
@@ -741,6 +750,9 @@ func computeGitRFM(projectRoot string, topDirs []string) []gitRFMEntry {
 		}
 		added, _ := strconv.Atoi(parts[0])
 		deleted, _ := strconv.Atoi(parts[1])
+		if policy != nil && policy.Excluded(filepath.Join(projectRoot, filepath.FromSlash(parts[2]))) {
+			continue
+		}
 		topDir := strings.SplitN(filepath.ToSlash(parts[2]), "/", 2)[0]
 		st, ok := dirStats[topDir]
 		if !ok {
@@ -851,18 +863,27 @@ type Result struct {
 }
 
 // ScoreDirectories ranks top-level directories for a query using all signals.
-func ScoreDirectories(query, projectRoot string, topDirs, excludePaths []string, opts Options) Result {
+func ScoreDirectories(query, projectRoot string, topDirs []string, policy *pathfilter.Policy, opts Options) Result {
 	if opts.TopK <= 0 {
 		opts.TopK = 4
 	}
 	if opts.MinReturn <= 0 {
 		opts.MinReturn = 2
 	}
+	if policy != nil {
+		filtered := make([]string, 0, len(topDirs))
+		for _, dir := range topDirs {
+			if !policy.Excluded(filepath.Join(projectRoot, dir)) {
+				filtered = append(filtered, dir)
+			}
+		}
+		topDirs = filtered
+	}
 	queryTerms := Tokenize(query)
 
 	profiles := make(map[string]*Profile, len(topDirs))
 	for _, dir := range topDirs {
-		profiles[dir] = BuildProfile(projectRoot, dir, excludePaths, 3)
+		profiles[dir] = BuildProfile(projectRoot, dir, policy, 3)
 	}
 
 	allFieldTerms := make([][]string, 0, len(topDirs))
@@ -914,7 +935,7 @@ func ScoreDirectories(query, projectRoot string, topDirs, excludePaths []string,
 		probeCandidates := uniqueStrings(append(append([]string(nil), queryTerms...), keywordTerms...))
 		probeTerms := selectProbeTerms(probeCandidates, idf, 6)
 		if len(probeTerms) > 0 {
-			dirHits := probeGrep(opts.RGPath, projectRoot, topDirs, probeTerms, excludePaths)
+			dirHits := probeGrep(opts.RGPath, projectRoot, topDirs, probeTerms, policy)
 			probeRanking := make([]dirScore, 0, len(topDirs))
 			probeSignal := make([]string, 0, len(topDirs))
 			for _, dir := range topDirs {
@@ -956,7 +977,7 @@ func ScoreDirectories(query, projectRoot string, topDirs, excludePaths []string,
 	}
 
 	// Signal 4: git history RFM.
-	if gitRanking := computeGitRFM(projectRoot, topDirs); len(gitRanking) > 0 {
+	if gitRanking := computeGitRFM(projectRoot, topDirs, policy); len(gitRanking) > 0 {
 		hasSignal := false
 		for _, r := range gitRanking {
 			if r.score > 0 {

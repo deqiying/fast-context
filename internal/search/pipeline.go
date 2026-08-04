@@ -7,6 +7,7 @@ import (
 
 	"github.com/deqiying/fast-context/internal/config"
 	"github.com/deqiying/fast-context/internal/executor"
+	"github.com/deqiying/fast-context/internal/pathfilter"
 	"github.com/deqiying/fast-context/internal/repomap"
 )
 
@@ -17,6 +18,15 @@ import (
 func RunPipeline(ctx context.Context, opts Options, client Client) (Result, error) {
 	opts = normalizeOptions(opts)
 	rgPath, _ := executor.FindRipgrep()
+	initialRoot, err := filepath.Abs(opts.ProjectRoot)
+	if err != nil {
+		return Result{}, err
+	}
+	policy, err := pathfilter.New(initialRoot, config.MergeExcludePaths(opts.ExcludePaths))
+	if err != nil {
+		return Result{}, err
+	}
+	opts.pathPolicy = policy
 
 	runOnce := func(root string, depth int) (Result, error) {
 		o := opts
@@ -32,16 +42,13 @@ func RunPipeline(ctx context.Context, opts Options, client Client) (Result, erro
 		return len(r.Files) > 0 || hasUniquePatterns(r)
 	}
 
-	result, err := runOnce(opts.ProjectRoot, opts.TreeDepth)
-	activeProjectRoot := opts.ProjectRoot
-	if abs, absErr := filepath.Abs(opts.ProjectRoot); absErr == nil {
-		activeProjectRoot = abs
-	}
+	result, err := runOnce(initialRoot, opts.TreeDepth)
+	activeProjectRoot := initialRoot
 	var retryNotes []string
 
 	shouldRetry := err == nil && !hasUsableResult(result) && result.Raw != ""
 	if shouldRetry {
-		retryRoots := selectNoResultRetryProjectRoots(rgPath, activeProjectRoot, result.Meta.HotDirs, 2, opts.Query, repomap.ListTopLevelDirs)
+		retryRoots := selectNoResultRetryProjectRoots(rgPath, activeProjectRoot, result.Meta.HotDirs, 2, opts.Query, policy, repomap.ListTopLevelDirs)
 		if len(retryRoots) > 0 {
 			retryTreeDepth := opts.TreeDepth
 			if retryTreeDepth == 0 || retryTreeDepth > 2 {
@@ -74,6 +81,7 @@ func RunPipeline(ctx context.Context, opts Options, client Client) (Result, erro
 	if err != nil {
 		return result, err
 	}
+	result.Files = filterResultFiles(result.Files, policy)
 
 	if len(result.Files) > opts.MaxResults {
 		result.Files = result.Files[:opts.MaxResults]
@@ -88,7 +96,7 @@ func RunPipeline(ctx context.Context, opts Options, client Client) (Result, erro
 		for _, f := range result.Files {
 			existing = append(existing, f.Path)
 		}
-		extra := autoGrepFiles(rgPath, uniquePatterns, activeProjectRoot, config.MergeExcludePaths(opts.ExcludePaths), existing, 3, grepBudget)
+		extra := autoGrepFiles(rgPath, uniquePatterns, activeProjectRoot, policy, existing, 3, grepBudget)
 		if len(extra) > 0 {
 			result.Files = append(result.Files, extra...)
 			result.GrepAdded = len(extra)
@@ -108,4 +116,18 @@ func RunPipeline(ctx context.Context, opts Options, client Client) (Result, erro
 	}
 
 	return result, nil
+}
+
+func filterResultFiles(files []ResultFile, policy *pathfilter.Policy) []ResultFile {
+	if policy == nil {
+		return files
+	}
+	filtered := files[:0]
+	for _, file := range files {
+		if file.FullPath == "" || policy.Excluded(file.FullPath) {
+			continue
+		}
+		filtered = append(filtered, file)
+	}
+	return filtered
 }

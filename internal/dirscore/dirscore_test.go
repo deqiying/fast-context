@@ -3,7 +3,10 @@ package dirscore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
 
 func TestSplitByCase(t *testing.T) {
@@ -105,5 +108,36 @@ func TestAdaptiveTopKBounds(t *testing.T) {
 	}
 	if hot[0] != "a" || hot[1] != "b" {
 		t.Fatalf("adaptiveTopK order wrong: %v", hot)
+	}
+}
+
+func TestProfileAndPathSpinesExcludeNestedPaths(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("package auth\nfunc Login() {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("auth/login.go")
+	write("auth/private/secret_login.go")
+	write("private/login.go")
+	policy, err := pathfilter.New(root, []string{"auth/private", "private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := BuildProfile(root, "auth", policy, 3)
+	if strings.Contains(strings.Join(profile.FilePaths, "\n"), "private") {
+		t.Fatalf("excluded file entered profile: %v", profile.FilePaths)
+	}
+	result := ScoreDirectories("login", root, []string{"private", "auth"}, policy, Options{TopK: 2, MinReturn: 1})
+	if strings.Contains(strings.Join(result.HotDirs, "\n"), "private") {
+		t.Fatalf("excluded top-level directory entered rankings: %v", result.HotDirs)
+	}
+	if strings.Contains(strings.Join(result.PathSpines, "\n"), "private") {
+		t.Fatalf("excluded file entered path spines: %v", result.PathSpines)
 	}
 }

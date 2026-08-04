@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/deqiying/fast-context/internal/dirscore"
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
 
 type OptimizerOptions struct {
@@ -31,14 +32,14 @@ type OptimizedMap struct {
 // BuildOptimized ports upstream buildOptimizedRepoMap: a shallow global tree
 // plus deeper subtrees for top-K scored hotspot directories and a path-spine
 // section, squeezed under MaxBytes.
-func BuildOptimized(query, projectRoot string, treeDepth int, excludePaths []string, opt OptimizerOptions, hints *BootstrapHints, progress func(string)) OptimizedMap {
+func BuildOptimized(query, projectRoot string, treeDepth int, policy *pathfilter.Policy, opt OptimizerOptions, hints *BootstrapHints, progress func(string)) OptimizedMap {
 	log := func(msg string) {
 		if progress != nil {
 			progress(msg)
 		}
 	}
 	if opt.Mode == "classic" {
-		base := Build(projectRoot, treeDepth, excludePaths)
+		base := Build(projectRoot, treeDepth, policy)
 		return OptimizedMap{Map: base, Strategy: "classic"}
 	}
 
@@ -55,8 +56,8 @@ func BuildOptimized(query, projectRoot string, treeDepth int, excludePaths []str
 		maxBytes = 120 * 1024
 	}
 
-	bootstrap := Build(projectRoot, bootstrapDepth, excludePaths)
-	topDirs := ListTopLevelDirs(projectRoot, excludePaths)
+	bootstrap := Build(projectRoot, bootstrapDepth, policy)
+	topDirs := ListTopLevelDirs(projectRoot, policy)
 
 	var keywords []string
 	if hints != nil {
@@ -66,7 +67,7 @@ func BuildOptimized(query, projectRoot string, treeDepth int, excludePaths []str
 	var hotDirs []string
 	var pathSpines []string
 	if len(topDirs) > 0 && hotspotTopK > 0 {
-		result := dirscore.ScoreDirectories(query, projectRoot, topDirs, excludePaths, dirscore.Options{
+		result := dirscore.ScoreDirectories(query, projectRoot, topDirs, policy, dirscore.Options{
 			TopK:      hotspotTopK,
 			UseProbe:  true,
 			Keywords:  keywords,
@@ -90,7 +91,7 @@ func BuildOptimized(query, projectRoot string, treeDepth int, excludePaths []str
 
 	hotspotSections := make([]string, 0, len(hotDirs))
 	for _, d := range hotDirs {
-		hotspotSections = append(hotspotSections, BuildSubtree(projectRoot, d, hotspotTreeDepth))
+		hotspotSections = append(hotspotSections, BuildSubtree(projectRoot, d, hotspotTreeDepth, policy))
 	}
 
 	pathSpineSection := ""

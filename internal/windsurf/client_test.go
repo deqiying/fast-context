@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -168,6 +173,301 @@ func TestParseResponseMarksMalformedToolArgumentsRecoverable(t *testing.T) {
 	}
 }
 
+func TestParseResponsePreservesRemoteInvalidArgument(t *testing.T) {
+	frame, err := protowire.EncodeConnectFrame([]byte(`{"error":{"code":"invalid_argument","message":"internal error (trace ID: fixture-trace)"}}`), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = NewClient(nil).ParseResponse(frame)
+	assertErrorCode(t, err, "invalid_argument")
+	if !strings.Contains(err.Error(), "fixture-trace") {
+		t.Fatalf("remote trace ID was not preserved: %v", err)
+	}
+}
+
+func TestStreamRejectsOversizeProtoBeforeHTTP(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, "unexpected")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.apiBase = server.URL
+	messages := []search.Message{{Role: 1, Content: strings.Repeat("x", 321*1024)}}
+	_, err := client.Stream(context.Background(), "fixture-key", "fixture-jwt", messages, "{}", time.Second)
+	assertErrorCode(t, err, "PAYLOAD_TOO_LARGE")
+	if calls.Load() != 0 {
+		t.Fatalf("oversize request reached HTTP server: calls=%d", calls.Load())
+	}
+}
+
+func TestStreamRejectsInvalidUTF8BeforeHTTP(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.apiBase = server.URL
+	_, err := client.Stream(
+		context.Background(),
+		"fixture-key",
+		"fixture-jwt",
+		[]search.Message{{Role: 1, Content: string([]byte{'x', 0xff})}},
+		"{}",
+		time.Second,
+	)
+	assertErrorCode(t, err, "PROTOCOL")
+	if calls.Load() != 0 {
+		t.Fatalf("invalid UTF-8 request reached HTTP server: calls=%d", calls.Load())
+	}
+}
+
+func TestBuildRequestRejectsInvalidUTF8AcrossOutboundFields(t *testing.T) {
+	invalid := string([]byte{'x', 0xff})
+	validMessage := search.Message{
+		Role:         2,
+		Content:      "content",
+		ToolCallID:   "call-id",
+		ToolName:     "restricted_exec",
+		ToolArgsJSON: "{}",
+		RefCallID:    "ref-id",
+	}
+	tests := []struct {
+		name     string
+		apiKey   string
+		jwt      string
+		messages []search.Message
+		toolDefs string
+	}{
+		{name: "api key", apiKey: invalid, jwt: "jwt", messages: []search.Message{validMessage}, toolDefs: "{}"},
+		{name: "jwt", apiKey: "key", jwt: invalid, messages: []search.Message{validMessage}, toolDefs: "{}"},
+		{name: "tool definitions", apiKey: "key", jwt: "jwt", messages: []search.Message{validMessage}, toolDefs: invalid},
+	}
+	messageFields := []struct {
+		name   string
+		mutate func(*search.Message)
+	}{
+		{name: "content", mutate: func(message *search.Message) { message.Content = invalid }},
+		{name: "tool call id", mutate: func(message *search.Message) { message.ToolCallID = invalid }},
+		{name: "tool name", mutate: func(message *search.Message) { message.ToolName = invalid }},
+		{name: "tool args", mutate: func(message *search.Message) { message.ToolArgsJSON = invalid }},
+		{name: "ref call id", mutate: func(message *search.Message) { message.RefCallID = invalid }},
+	}
+	for _, field := range messageFields {
+		message := validMessage
+		field.mutate(&message)
+		tests = append(tests, struct {
+			name     string
+			apiKey   string
+			jwt      string
+			messages []search.Message
+			toolDefs string
+		}{name: field.name, apiKey: "key", jwt: "jwt", messages: []search.Message{message}, toolDefs: "{}"})
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := buildRequest(test.apiKey, test.jwt, test.messages, test.toolDefs)
+			assertErrorCode(t, err, "PROTOCOL")
+		})
+	}
+}
+
+func TestParseResponsePreservesEmbeddedRemoteError(t *testing.T) {
+	payload := &protowire.Encoder{}
+	payload.String(1, `{"error":{"code":"invalid_argument","message":"embedded trace ID: abc123"}}`)
+	frame, err := protowire.EncodeConnectFrame(payload.BytesValue(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = NewClient(nil).ParseResponse(frame)
+	assertErrorCode(t, err, "invalid_argument")
+	if !strings.Contains(err.Error(), "abc123") {
+		t.Fatalf("embedded remote message was not preserved: %v", err)
+	}
+}
+
+func TestClassifyHTTPErrorPreservesStatusPriorityAndRemoteCode(t *testing.T) {
+	body := []byte(`{"error":{"code":"invalid_argument","message":"fixture trace ID: abc123"}}`)
+	tests := []struct {
+		status int
+		code   string
+	}{
+		{status: http.StatusBadRequest, code: "invalid_argument"},
+		{status: http.StatusUnauthorized, code: "AUTH_ERROR"},
+		{status: http.StatusForbidden, code: "AUTH_ERROR"},
+		{status: http.StatusTooManyRequests, code: "RATE_LIMITED"},
+		{status: http.StatusRequestEntityTooLarge, code: "PAYLOAD_TOO_LARGE"},
+		{status: http.StatusBadGateway, code: "SERVER_ERROR"},
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprint(test.status), func(t *testing.T) {
+			err := classifyHTTPError(test.status, body, false)
+			assertErrorCode(t, err, test.code)
+			if !strings.Contains(err.Error(), "abc123") {
+				t.Fatalf("sanitized remote diagnostic missing: %v", err)
+			}
+		})
+	}
+}
+
+func TestStreamPreservesHTTP400RemoteCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"invalid_argument","message":"fixture trace ID: abc123"}}`)
+	}))
+	defer server.Close()
+	client := NewClient(server.Client())
+	client.apiBase = server.URL
+	_, err := client.Stream(context.Background(), "fixture-key", "fixture-jwt", nil, "{}", time.Second)
+	assertErrorCode(t, err, "invalid_argument")
+	if !strings.Contains(err.Error(), "abc123") {
+		t.Fatalf("remote diagnostic missing: %v", err)
+	}
+}
+
+func TestClassifyHTTPErrorRejectsInvalidRemoteCode(t *testing.T) {
+	for _, code := range []string{"INVALID ARGUMENT\n", " invalid_argument ", strings.Repeat("a", 65)} {
+		body, err := json.Marshal(map[string]any{"error": map[string]any{"code": code, "message": "fixture"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertErrorCode(t, classifyHTTPError(http.StatusBadRequest, body, false), "SERVER_ERROR")
+	}
+}
+
+func TestRemoteMessageIsSanitizedBoundedAndKeepsTrace(t *testing.T) {
+	message := "\x1b[31m\x00" + strings.Repeat("x", 3000) + " trace ID: abc123"
+	body, err := json.Marshal(map[string]any{"error": map[string]any{"code": "invalid_argument", "message": message}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = classifyHTTPError(http.StatusBadRequest, body, false)
+	assertErrorCode(t, err, "invalid_argument")
+	if len(err.Error()) > maxRemoteMessageBytes || strings.Contains(err.Error(), "\x1b") || strings.Contains(err.Error(), "\x00") {
+		t.Fatalf("remote message was not sanitized: bytes=%d value=%q", len(err.Error()), err.Error())
+	}
+	if !strings.Contains(err.Error(), "trace ID: abc123") {
+		t.Fatalf("trace ID was not preserved: %q", err.Error())
+	}
+}
+
+func TestRequestSizeUsesBuiltProtobuf(t *testing.T) {
+	client := NewClient(nil)
+	messages := []search.Message{{Role: 1, Content: "fixture"}}
+	got, err := client.RequestSize("fixture-key", "fixture-jwt", messages, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proto, err := buildRequest("fixture-key", "fixture-jwt", messages, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != len(proto) {
+		t.Fatalf("RequestSize = %d, want %d", got, len(proto))
+	}
+}
+
+func TestSearchInvalidArgumentRecoveryUsesExactWindsurfRequestSize(t *testing.T) {
+	t.Setenv("FAST_CONTEXT_KEY", "")
+	t.Setenv("WINDSURF_API_KEY", "test-key")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 240; i++ {
+		path := filepath.Join(root, "src", fmt.Sprintf("fixture-file-%03d-with-a-long-name.go", i))
+		if err := os.WriteFile(path, []byte("package src\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	toolFrame := connectTextFrame(t, `[TOOL_CALLS]restricted_exec[ARGS]{"command1":{"type":"tree","path":"/codebase/src","levels":2}}`)
+	answerFrame := connectTextFrame(t, `[TOOL_CALLS]answer[ARGS]{"answer":"<ANSWER><file path=\"/codebase/src/fixture-file-000-with-a-long-name.go\"><range>1-1</range></file></ANSWER>"}`)
+	authResponse := &protowire.Encoder{}
+	authResponse.String(1, "eyJfixture.payload.signature")
+
+	var streamCalls atomic.Int32
+	var sizesMu sync.Mutex
+	var requestSizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/GetUserJwt":
+			_, _ = w.Write(authResponse.BytesValue())
+		case "/CheckUserMessageRateLimit":
+			w.WriteHeader(http.StatusOK)
+		case "/GetDevstralStream":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			frames, err := protowire.DecodeConnectFrames(body)
+			if err != nil || len(frames) != 1 {
+				http.Error(w, "invalid request frame", http.StatusInternalServerError)
+				return
+			}
+			sizesMu.Lock()
+			requestSizes = append(requestSizes, len(frames[0]))
+			sizesMu.Unlock()
+			switch streamCalls.Add(1) {
+			case 1:
+				_, _ = w.Write(toolFrame)
+			case 2:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{"code":"invalid_argument","message":"fixture trace ID: exact-size"}}`)
+			case 3:
+				_, _ = w.Write(answerFrame)
+			default:
+				http.Error(w, "unexpected stream call", http.StatusInternalServerError)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	client.authBase = server.URL
+	client.apiBase = server.URL
+	result, err := search.Run(context.Background(), search.Options{
+		Query:            "find the fixture file",
+		ProjectRoot:      root,
+		TreeDepth:        2,
+		MaxTurns:         2,
+		MaxCommands:      4,
+		MaxResults:       4,
+		Timeout:          2 * time.Second,
+		RepoMapMode:      "classic",
+		BootstrapEnabled: false,
+	}, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamCalls.Load() != 3 || !result.Meta.ContextTrimmed || result.Meta.ErrorCode != "" {
+		t.Fatalf("unexpected recovery result: calls=%d meta=%#v", streamCalls.Load(), result.Meta)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "src/fixture-file-000-with-a-long-name.go" {
+		t.Fatalf("unexpected result files: %#v", result.Files)
+	}
+	sizesMu.Lock()
+	sizes := append([]int(nil), requestSizes...)
+	sizesMu.Unlock()
+	if len(sizes) != 3 || sizes[2] >= sizes[1] || sizes[2] > search.MaxRequestProtoBytes {
+		t.Fatalf("recovery did not strictly reduce the real protobuf: sizes=%v limit=%d", sizes, search.MaxRequestProtoBytes)
+	}
+}
+
 func TestClassifyStatusCodes(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -219,4 +519,15 @@ func gzipTestPayload(t *testing.T, payload []byte) []byte {
 		t.Fatal(err)
 	}
 	return body.Bytes()
+}
+
+func connectTextFrame(t *testing.T, text string) []byte {
+	t.Helper()
+	payload := &protowire.Encoder{}
+	payload.String(1, text)
+	frame, err := protowire.EncodeConnectFrame(payload.BytesValue(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frame
 }

@@ -4,12 +4,13 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | 待实施 |
+| 文档状态 | 已实施，待提交/发布 |
 | 问题范围 | Go CLI 语义搜索的工具结果回传、请求预算、排除边界与远端错误诊断 |
 | 当前版本 | `0.1.5`（commit `286dd15`） |
 | 影响版本 | 已确认 `0.1.5`；`0.1.4` 曾出现同类远端错误 |
 | 建议修复版本 | `0.1.6`（P0；P1 可同版本或独立后续 patch） |
 | 编写日期 | 2026-08-03 |
+| 实施日期 | 2026-08-04 |
 | 关联文档 | [fast-context Go CLI 技术架构方案](./fast-context-go-cli-architecture.md) |
 
 ## 2. 结论
@@ -789,32 +790,44 @@ fast-context search "where is CLI command dispatch implemented" `
 
 ### 14.1 P0 发布门槛
 
-- [ ] UTF-8 边界测试在旧实现上失败、修复后通过。
-- [ ] 所有 outbound code-search message/tool-definition string 在测试中满足 `utf8.ValidString=true`。
-- [ ] 真实 request protobuf 超过 `320 KiB` 时不产生 HTTP 请求。
-- [ ] 常态/恢复态工具结果均不超预算，所有 command wrapper 完整。
-- [ ] assistant thinking、command fields/arrays 与 `ToolArgsJSON` 均不超内部预算。
-- [ ] 主搜索与 Bootstrap 都强制 `MaxCommands`，越界命令不执行、不回传。
-- [ ] HTTP 400/Connect remote `invalid_argument` 均保留原始 code，不再输出 `UNKNOWN`。
-- [ ] 401/403、429、413、5xx 的既有本地分类不因 remote body 解析而回归。
-- [ ] `invalid_argument` 最多恢复一次，且只在真实 protobuf 严格变小且不超限时重发。
-- [ ] 恢复过程不重复执行本地命令。
-- [ ] 恢复成功的 JSON 只保留 `context_trimmed=true`，不残留 `error_code`。
-- [ ] P0 定向测试、`go test ./...`、`go vet ./...`、`git diff --check` 通过。
-- [ ] README、CLI contract 与架构文档中的 P0 用户语义/内部设计同步。
-- [ ] 小 fixture、大 fixture 与原始 Unity 查询完成受控 E2E，默认设置下不再需要极端结果截断。
+- [x] UTF-8 边界测试在旧实现上失败、修复后通过。
+- [x] 所有 outbound code-search message/tool-definition string 在测试中满足 `utf8.ValidString=true`。
+- [x] 真实 request protobuf 超过 `320 KiB` 时不产生 HTTP 请求。
+- [x] 常态/恢复态工具结果均不超预算，所有 command wrapper 完整。
+- [x] assistant thinking、command fields/arrays 与 `ToolArgsJSON` 均不超内部预算。
+- [x] 主搜索与 Bootstrap 都强制 `MaxCommands`，越界命令不执行、不回传。
+- [x] HTTP 400/Connect remote `invalid_argument` 均保留原始 code，不再输出 `UNKNOWN`。
+- [x] 401/403、429、413、5xx 的既有本地分类不因 remote body 解析而回归。
+- [x] `invalid_argument` 最多恢复一次，且只在真实 protobuf 严格变小且不超限时重发。
+- [x] 恢复过程不重复执行本地命令。
+- [x] 恢复成功的 JSON 只保留 `context_trimmed=true`，不残留 `error_code`。
+- [x] P0 定向测试、`go test ./...`、`go vet ./...`、`git diff --check` 通过。
+- [x] README、CLI contract 与架构文档中的 P0 用户语义/内部设计同步。
+- [x] 小 fixture、大 fixture 与原始 Unity 查询完成受控 E2E，默认设置下不再需要极端结果截断。
 
 ### 14.2 P1 完整外发边界门槛
 
-- [ ] effective excludes 覆盖 repo map、hotspot、dirscore/path spine、五类 executor 命令、retry、auto-grep、final result 与 snippets。
-- [ ] original-root policy 在 narrow-root retry 与 symlink 场景不漂移。
-- [ ] pathfilter、repomap、dirscore、executor、search 定向测试通过。
-- [ ] README、embedded Skill、CLI contract 与架构文档中的 P1 外传边界同步。
+- [x] effective excludes 覆盖 repo map、hotspot、dirscore/path spine、五类 executor 命令、retry、auto-grep、final result 与 snippets。
+- [x] original-root policy 在 narrow-root retry 与 symlink 场景不漂移。
+- [x] pathfilter、repomap、dirscore、executor、search 定向测试通过。
+- [x] README、embedded Skill、CLI contract 与架构文档中的 P1 外传边界同步。
 
 ### 14.3 交付安全门槛
 
-- [ ] 输出、日志、测试和文档不包含真实 key、JWT、源码正文或私有 credential path。
-- [ ] 未经授权不修改版本、不创建 tag、不 push、不发布。
+- [x] 输出、日志、测试和文档不包含真实 key、JWT、源码正文或私有 credential path。
+- [x] 未经授权不修改版本、不创建 tag、不 push、不发布。
+
+### 14.4 实施验证结果
+
+| 验证项 | 结果 |
+| --- | --- |
+| 本地质量门槛 | `go test -count=1 ./...`、`go vet ./...`、`git diff --check` 全部通过 |
+| 真实 protobuf 恢复链路 | 使用真实 `windsurf.Client` 与本地 HTTP 服务验证失败请求、严格缩小后的单次重发及成功 JSON 状态 |
+| 小 fixture | 最终构建完成多轮 restricted tool 调用并返回 CLI dispatch 候选 |
+| 大 fixture | 8-command 多轮搜索成功；nested exclude 未进入候选；非法 UTF-8 读取显示 `utf8_repaired=true` |
+| Unity 完整根目录 | 原始查询完成 3 个 8-command 工具回合并成功返回候选，未再出现 `UNKNOWN`/`invalid_argument` |
+| Unity 窄化对照 | `Assets/CodeHotUpdate` 完成 3 个 8-command 工具回合并成功返回候选 |
+| 发布动作 | 未修改版本，未创建 tag，未 push，未发布 |
 
 ## 15. 最终决策
 

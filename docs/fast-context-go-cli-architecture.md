@@ -22,8 +22,8 @@
 
 > **2026-07-05 更新**：GitHub 仓库已停更在 v1.2.2；npm 包 `fast-context-mcp` 持续演进（当前 1.5.2）。
 > 本项目已对齐 npm 1.5.2 的功能：bootstrap + hotspot repo map（`internal/dirscore` BM25F/probe/RRF）、
-> grep keywords 本地扩展、无结果自动重试、`--include-snippets` 代码片段输出、`--tree-depth 0` 自动深度、
-> 智能上下文裁剪 + 320KB preflight trim、默认 exclude 合并、FC_* 环境变量配置、key 截断自愈。
+> grep keywords 本地扩展、无结果自动重试、`--include-snippets` 代码片段输出、`classic` 下的 `--tree-depth 0` 自动深度、
+> 智能上下文裁剪 + 320KB 真实 protobuf 发送前 gate、original-root excludes policy、FC_* 环境变量配置、key 截断自愈。
 > 后续对齐请以 `npm pack fast-context-mcp@latest` 解包内容为基准，而不是 GitHub 仓库。
 
 上游当前是 Node.js MCP server：
@@ -96,7 +96,10 @@ internal/cli/
 internal/config/
 internal/credentials/
 internal/repomap/
+internal/dirscore/
 internal/executor/
+internal/pathfilter/
+internal/textutil/
 internal/windsurf/
 internal/protowire/
 internal/search/
@@ -112,7 +115,10 @@ internal/version/
 | `internal/config` | 读取 `FC_*` env 和 flag 默认值，并严格解析用户级 JSON 配置 |
 | `internal/credentials` | 按优先级解析 `FAST_CONTEXT_KEY`、本地 JSON、`WINDSURF_API_KEY` 和 Linux/WSL Devin CLI TOML；仅在显式 `--path` 时读取 `state.vscdb` |
 | `internal/repomap` | 生成 `/codebase` 虚拟树，自动 depth fallback |
+| `internal/dirscore` | 生成目录 profile、probe、hotspot 与 path spine 评分 |
 | `internal/executor` | 受限本地命令执行和路径沙箱 |
+| `internal/pathfilter` | 以初始项目根为锚点，统一约束枚举、读取、重试与最终结果 |
+| `internal/textutil` | 非法 UTF-8 修复与 rune-safe byte-budget 截断 |
 | `internal/windsurf` | 认证、JWT 缓存、rate limit 检查、流式请求 |
 | `internal/protowire` | 无 `.proto` 场景下的 Protobuf wire 编码和 Connect frame |
 | `internal/search` | 多轮搜索编排、工具调用回填、force-answer 逻辑 |
@@ -126,13 +132,15 @@ internal/version/
 2. 读取 API key：按 `FAST_CONTEXT_KEY` → `$HOME/.config/fast-context/config.json` → `WINDSURF_API_KEY` → Linux/WSL Devin CLI TOML 解析；运行时不自动发现 `state.vscdb`。
 3. 通过认证接口换取 JWT，并按 JWT `exp` 做内存缓存。
 4. 调用 rate limit 检查接口，失败则直接返回可读错误。
-5. 构造项目目录树，过大时自动降低 `tree_depth`。
-6. 构造 system prompt、tool schema 和用户消息。
-7. 向 Windsurf Devstral stream 接口发起 Connect-RPC 请求。
-8. 解析响应中的 `[TOOL_CALLS]restricted_exec[ARGS]{...}`。
-9. 在本地执行受限命令，并把结果作为 tool result 发回模型。
-10. 重复 `max_turns` 轮，最后注入 force-answer prompt。
-11. 解析 `<ANSWER>` XML，输出文件路径、行号范围和 grep keywords。
+5. 从初始 `projectRoot` 创建 immutable excludes policy，并在 repo map、hotspot 与 path spine 中复用。
+6. 构造 system prompt、tool schema 和用户消息；`classic` 的 auto depth 与默认 `bootstrap_hotspot` 的 global/hotspot depth 分别处理。
+7. 构造真实未压缩 protobuf，校验全部 string 为合法 UTF-8，并在 HTTP 前强制 `320 KiB` 上限。
+8. 向 Windsurf Devstral stream 接口发起 Connect-RPC 请求并保留结构化远端错误码。
+9. 严格解析 `[TOOL_CALLS]restricted_exec[ARGS]{...}`，按数字顺序验证 `command1..commandN` 并本地强制命令与字段预算。
+10. 在 excludes policy 内并发执行受限命令，以完整 wrapper 和整轮 byte budget 组装 tool result。
+11. 对已含 tool result 的 `invalid_argument`，仅在真实 protobuf 严格缩小且不超限时重发一次，不重复执行命令。
+12. 重复 `max_turns` 轮，最后注入 force-answer prompt。
+13. 解析 `<ANSWER>` XML，过滤 excluded path 后输出文件路径、行号范围、grep keywords 与可选 snippets。
 
 ## 6. Go 实现关键点
 
@@ -154,11 +162,12 @@ fast-context version
 | Flag | 默认值 | 说明 |
 | --- | --- | --- |
 | `--project` | `.` | 项目根目录 |
-| `--tree-depth` | `3` | 初始 repo map 深度 |
+| `--tree-depth` | `3` | `classic` 的 repo map 深度；`0` 才启用 project-size auto。默认 optimizer 使用独立 global/hotspot depth |
 | `--max-turns` | `3` | 搜索回合数 |
+| `--max-commands` | `8` | 主搜索每轮本地强制的 restricted command 上限 |
 | `--max-results` | `10` | 返回文件数量 |
 | `--timeout` | `30s` | 单次 Windsurf stream timeout |
-| `--exclude` | 空 | 可重复传入 |
+| `--exclude` | 空 | 可重复传入；相对初始项目根解释并覆盖本地读取与最终结果 |
 | `--format` | `text` | `text` 或 `json` |
 | `--verbose` | `false` | 打印进度和诊断 |
 
@@ -210,9 +219,11 @@ func DecodeConnectFrames(raw []byte) ([][]byte, error)
 
 ```go
 type Client interface {
-    FetchJWT(ctx context.Context, apiKey string) (string, error)
-    CheckRateLimit(ctx context.Context, apiKey, jwt string, model string) (bool, error)
-    GetDevstralStream(ctx context.Context, req Request, timeout time.Duration) ([]byte, error)
+    FetchJWT(ctx context.Context, apiKey string, timeout time.Duration) (string, error)
+    CheckRateLimit(ctx context.Context, apiKey, jwt string, timeout time.Duration) (bool, error)
+    RequestSize(apiKey, jwt string, messages []Message, toolDefs string) (int, error)
+    Stream(ctx context.Context, apiKey, jwt string, messages []Message, toolDefs string, timeout time.Duration) ([]byte, error)
+    ParseResponse(data []byte) (string, *ToolCall, error)
 }
 ```
 
@@ -225,7 +236,13 @@ type Client interface {
 | `PAYLOAD_TOO_LARGE` | HTTP 413 或服务端 payload 相关错误 |
 | `TIMEOUT` | context deadline / client timeout |
 | `NETWORK` | DNS、TLS、连接失败 |
+| `SERVER_ERROR` | HTTP 5xx 或无合法远端 code 的 HTTP 4xx |
 | `PROTOCOL` | frame/protobuf/response parse 失败 |
+| 合法小写远端 code | HTTP 4xx 或 Connect error 中满足格式约束的结构化 code，例如 `invalid_argument` |
+
+`RequestSize` 与 `Stream` 必须复用同一个 request builder。`Stream` 在 Connect frame 与 HTTP request 构造前，以真实未压缩 protobuf bytes 强制 `320 KiB` 上限；超限时本地返回 `PAYLOAD_TOO_LARGE`，不得发网。
+
+HTTP error body 与 Connect error frame 共用受限 parser。HTTP 401/403、429、413、5xx 的本地分类优先；其他 HTTP 4xx 和 Connect error 可保留合法远端 code。body 与 message 必须限长并清理控制字符，不能记录或返回完整 raw body。
 
 unary 响应压缩由 Go `http.Transport` 负责：调用方不得手动设置 `Accept-Encoding: gzip`，否则标准库不会透明解压 gzip 响应，压缩字节会被误交给 protobuf 解析器。`Content-Encoding: gzip` 仅在请求体确实压缩时设置；streaming path 继续使用自己的 Connect frame 压缩契约。
 
@@ -252,6 +269,9 @@ CLI 的安全边界应与上游一致：远端模型不能执行任意 shell，�
 3. `..`、绝对路径逃逸、symlink 逃逸需要拒绝或规范化后检查。
 4. `rg` 必须使用参数数组执行，禁止拼接 shell 命令。
 5. `RIPGREP_CONFIG_PATH` 应清空，避免用户本地 rg 配置污染结果。
+6. effective excludes 以初始项目根为锚点，覆盖 repo map、dirscore/path spine、bootstrap/main executor、retry、auto-grep、final files 与 snippets。
+7. `--max-commands` 和 Bootstrap 对应上限必须由本地验证执行；schema 只是模型提示。
+8. 本地文件与命令结果在 protobuf 前必须规范化为合法 UTF-8，所有 byte 截断都不能拆分 rune。
 
 ripgrep 分发建议：
 
@@ -324,12 +344,14 @@ type ResultFile struct {
 需要保留的行为：
 
 1. 初始消息包含 problem statement 和 repo map。
-2. 每轮远端只能调用一次 `restricted_exec`，但其中可包含多个 `commandN`。
-3. 本地并发执行这些命令。
-4. 如果远端没有生成有效命令，可补偿最多 2 轮。
-5. 最后一轮注入 force-answer prompt。
-6. 解析 `<ANSWER>` XML，忽略越界/不存在文件，返回真实路径。
-7. 输出去重后的 grep keywords。
+2. 每轮远端只能调用一次 `restricted_exec`，但其中可包含多个 `commandN`；本地只接受 `command1..commandN`，严格拒绝未知字段、越界编号和超预算字段。
+3. validated commands 按数字顺序并发执行；执行、hints、state 与写回历史的 `ToolArgsJSON` 必须来自同一批数据。
+4. assistant thinking、serialized tool args 和单轮 tool results 都有内部 byte budget；tool-result wrapper 必须完整且 UTF-8 合法。
+5. 如果远端没有生成有效命令，可补偿最多 2 轮。
+6. 对已含 tool result 的 `invalid_argument` 最多恢复一次；候选请求必须用真实 protobuf 证明严格变小且不超限。
+7. 最后一轮注入 force-answer prompt。
+8. 解析 `<ANSWER>` XML，忽略越界、excluded 或不存在文件，返回真实路径。
+9. 输出去重后的 grep keywords。
 
 ### 6.7 输出格式
 
@@ -362,10 +384,13 @@ JSON 输出用于脚本和 agent 集成：
     "tree_depth": 3,
     "tree_size_kb": 12.5,
     "max_turns": 3,
-    "max_results": 10
+    "max_results": 10,
+    "context_trimmed": true
   }
 }
 ```
+
+`meta.context_trimmed` 与 `meta.error_code` 是既有可选字段。恢复成功时只保留 `context_trimmed=true`；最终失败时 `error.code` 与 `meta.error_code` 可为合法小写远端 code，例如 `invalid_argument`。
 
 ## 7. 依赖建议
 

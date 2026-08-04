@@ -6,6 +6,18 @@ import (
 	"strings"
 
 	"github.com/deqiying/fast-context/internal/executor"
+	"github.com/deqiying/fast-context/internal/textutil"
+)
+
+const (
+	recoveryToolResultBudget       = 20_000
+	maxAssistantThinkingBytes      = 8 * 1024
+	maxProgressSummaryBytes        = 8 * 1024
+	maxProgressSummaryItemBytes    = 512
+	maxProgressSummaryQueryBytes   = 2 * 1024
+	toolResultTruncatedMarker      = "\n...[truncated]..."
+	progressItemTruncatedMarker    = "...[truncated]"
+	progressSummaryTruncatedMarker = "\n...[progress summary truncated]..."
 )
 
 // trimState carries a compact record of recent search activity so trimmed
@@ -18,23 +30,25 @@ type trimState struct {
 	recentCommands []string // human-readable descriptions
 }
 
-func (s *trimState) record(commands map[string]executor.Command) {
-	for _, cmd := range commands {
+func (s *trimState) record(commands []executor.NamedCommand) {
+	for _, named := range commands {
+		cmd := named.Command
 		switch cmd.Type {
 		case "rg":
 			if cmd.Pattern != "" {
-				s.recentPatterns = append(s.recentPatterns, cmd.Pattern)
-				s.recentCommands = append(s.recentCommands, "rg "+cmd.Pattern)
+				pattern := compactProgressItem(cmd.Pattern)
+				s.recentPatterns = append(s.recentPatterns, pattern)
+				s.recentCommands = append(s.recentCommands, "rg "+pattern)
 			}
 		case "readfile":
 			if cmd.File != "" {
-				short := strings.TrimPrefix(cmd.File, "/codebase/")
+				short := compactProgressItem(strings.TrimPrefix(cmd.File, "/codebase/"))
 				s.recentFiles = append(s.recentFiles, short)
 				s.recentCommands = append(s.recentCommands, "read "+short)
 			}
 		case "tree":
 			if cmd.Path != "" {
-				s.recentCommands = append(s.recentCommands, "tree "+cmd.Path)
+				s.recentCommands = append(s.recentCommands, "tree "+compactProgressItem(cmd.Path))
 			}
 		}
 	}
@@ -43,35 +57,109 @@ func (s *trimState) record(commands map[string]executor.Command) {
 	s.recentPatterns = tailUnique(s.recentPatterns, 30)
 }
 
-var commandResultRe = regexp.MustCompile(`(?s)<(command\d+)_result>\n(.*?)\n</command\d+_result>`)
+var commandResultRe = regexp.MustCompile(`(?s)<(command\d+)_result>\n(.*?)\n</(command\d+)_result>`)
+
+type toolResultBlock struct {
+	key  string
+	body string
+}
 
 func truncateToolResultsPreserve(text string, maxPerBlock, maxTotal int) string {
-	if len(text) <= maxTotal {
-		return text
+	text, _ = textutil.NormalizeUTF8(text)
+	if maxTotal <= 0 {
+		return ""
 	}
 	matches := commandResultRe.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
-		return text[:maxTotal] + "\n...[tool results truncated]..."
+		out, _ := textutil.TruncateUTF8Bytes(text, maxTotal, "\n...[tool results truncated]...")
+		return out
 	}
-	var parts []string
-	total := 0
+	blocks := make([]toolResultBlock, 0, len(matches))
 	for _, m := range matches {
-		key, body := m[1], m[2]
-		if len(body) > maxPerBlock {
-			body = body[:maxPerBlock] + "\n...[truncated]..."
+		if m[1] != m[3] {
+			continue
 		}
-		block := "<" + key + "_result>\n" + body + "\n</" + key + "_result>"
-		parts = append(parts, block)
-		total += len(block)
-		if total > maxTotal {
+		body := m[2]
+		if maxPerBlock > 0 {
+			body, _ = textutil.TruncateUTF8Bytes(body, maxPerBlock, toolResultTruncatedMarker)
+		}
+		blocks = append(blocks, toolResultBlock{key: m[1], body: body})
+	}
+	if len(blocks) == 0 {
+		out, _ := textutil.TruncateUTF8Bytes(text, maxTotal, "\n...[tool results truncated]...")
+		return out
+	}
+	return formatToolResultBlocks(blocks, maxTotal)
+}
+
+func formatToolResultBlocks(blocks []toolResultBlock, maxTotal int) string {
+	fullBlocks := make([]string, len(blocks))
+	lengths := make([]int, len(blocks))
+	baseBytes := 0
+	for i, block := range blocks {
+		prefix := "<" + block.key + "_result>\n"
+		suffix := "\n</" + block.key + "_result>"
+		fullBlocks[i] = prefix + block.body + suffix
+		lengths[i] = len(block.body)
+		baseBytes += len(prefix) + len(suffix)
+	}
+	full := strings.Join(fullBlocks, "")
+	if len(full) <= maxTotal {
+		return full
+	}
+	bodyBudget := maxTotal - baseBytes
+	if bodyBudget < 0 {
+		bodyBudget = 0
+	}
+	allocations := fairByteAllocations(lengths, bodyBudget)
+	var b strings.Builder
+	for i, block := range blocks {
+		body, _ := textutil.TruncateUTF8Bytes(block.body, allocations[i], toolResultTruncatedMarker)
+		fmt.Fprintf(&b, "<%s_result>\n%s\n</%s_result>", block.key, body, block.key)
+	}
+	return b.String()
+}
+
+func fairByteAllocations(lengths []int, budget int) []int {
+	allocations := make([]int, len(lengths))
+	remaining := make([]int, len(lengths))
+	for i := range lengths {
+		remaining[i] = i
+	}
+	for len(remaining) > 0 && budget > 0 {
+		share := budget / len(remaining)
+		if share == 0 {
+			for i := 0; i < budget && i < len(remaining); i++ {
+				allocations[remaining[i]]++
+			}
 			break
 		}
+		next := remaining[:0]
+		usedShort := false
+		for _, index := range remaining {
+			if lengths[index] <= share {
+				allocations[index] = lengths[index]
+				budget -= lengths[index]
+				usedShort = true
+				continue
+			}
+			next = append(next, index)
+		}
+		if usedShort {
+			remaining = next
+			continue
+		}
+		for _, index := range remaining {
+			allocations[index] = share
+			budget -= share
+		}
+		for i := 0; budget > 0 && i < len(remaining); i++ {
+			allocations[remaining[i]]++
+			budget--
+		}
+		break
 	}
-	out := strings.Join(parts, "")
-	if len(out) > maxTotal {
-		out = out[:maxTotal] + "\n...[tool results truncated]..."
-	}
-	return out
+	return allocations
 }
 
 // trimMessages compacts the conversation: keep the system prompt, compact the
@@ -85,6 +173,11 @@ func trimMessages(messages *[]Message, state *trimState) bool {
 	}
 	systemMsg := msgs[0]
 	userMsg := msgs[1]
+	originalSystem := systemMsg
+	originalUser := userMsg
+	normalizeMessage(&systemMsg)
+	normalizeMessage(&userMsg)
+	baseChanged := systemMsg != originalSystem || userMsg != originalUser
 
 	// Find the most recent tool-result and its matching tool-call.
 	lastToolResultIdx := -1
@@ -128,7 +221,9 @@ func trimMessages(messages *[]Message, state *trimState) bool {
 				q = strings.TrimSpace(m[1])
 			}
 		}
+		q, _ = textutil.TruncateUTF8Bytes(q, maxProgressSummaryQueryBytes, progressItemTruncatedMarker)
 		compact := fmt.Sprintf("Problem Statement: %s\n\nRepo Map: (omitted to reduce payload). Use tree/rg to explore structure if needed.", q)
+		compact, _ = textutil.NormalizeUTF8(compact)
 		if len(compact) < len(userMsg.Content) {
 			compactedUser = Message{Role: userMsg.Role, Content: compact}
 			didCompactUser = true
@@ -150,25 +245,37 @@ func trimMessages(messages *[]Message, state *trimState) bool {
 		summaryLines = append(summaryLines, "rg_patterns: "+strings.Join(tailSlice(state.recentPatterns, 20), ", "))
 	}
 	summaryLines = append(summaryLines, "Continue from the most recent tool results kept below.")
-	summaryMsg := Message{Role: 1, Content: strings.Join(summaryLines, "\n")}
-
-	willDropHistory := tailStart > 2
-	if !didCompactUser && !willDropHistory {
-		return false
-	}
+	summary, _ := textutil.TruncateUTF8Bytes(
+		strings.Join(summaryLines, "\n"),
+		maxProgressSummaryBytes,
+		progressSummaryTruncatedMarker,
+	)
+	summaryMsg := Message{Role: 1, Content: summary}
+	normalizeMessage(&summaryMsg)
 
 	// Shrink oversized tail messages to avoid immediate re-overflow.
+	tailChanged := false
 	for i := range tail {
+		before := tail[i]
+		normalizeMessage(&tail[i])
 		switch tail[i].Role {
 		case 2:
-			if len(tail[i].Content) > 8000 {
-				tail[i].Content = tail[i].Content[:8000] + "\n...[assistant content truncated]..."
-			}
+			tail[i].Content, _ = textutil.TruncateUTF8Bytes(
+				tail[i].Content,
+				maxAssistantThinkingBytes,
+				"\n...[assistant content truncated]...",
+			)
 		case 4:
-			if len(tail[i].Content) > 20000 {
-				tail[i].Content = truncateToolResultsPreserve(tail[i].Content, 4000, 20000)
-			}
+			tail[i].Content = truncateToolResultsPreserve(tail[i].Content, 4000, recoveryToolResultBudget)
 		}
+		if tail[i] != before {
+			tailChanged = true
+		}
+	}
+
+	willDropHistory := tailStart > 2
+	if !didCompactUser && !willDropHistory && !tailChanged && !baseChanged {
+		return false
 	}
 
 	out := make([]Message, 0, len(tail)+3)
@@ -180,6 +287,20 @@ func trimMessages(messages *[]Message, state *trimState) bool {
 	out = append(out, tail...)
 	*messages = out
 	return true
+}
+
+func normalizeMessage(message *Message) {
+	message.Content, _ = textutil.NormalizeUTF8(message.Content)
+	message.ToolCallID, _ = textutil.NormalizeUTF8(message.ToolCallID)
+	message.ToolName, _ = textutil.NormalizeUTF8(message.ToolName)
+	message.ToolArgsJSON, _ = textutil.NormalizeUTF8(message.ToolArgsJSON)
+	message.RefCallID, _ = textutil.NormalizeUTF8(message.RefCallID)
+}
+
+func compactProgressItem(value string) string {
+	value, _ = textutil.NormalizeUTF8(value)
+	value, _ = textutil.TruncateUTF8Bytes(value, maxProgressSummaryItemBytes, progressItemTruncatedMarker)
+	return value
 }
 
 // estimateRequestSize approximates the proto payload size for preflight

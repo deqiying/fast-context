@@ -60,12 +60,12 @@ Without `--path`, `key extract` checks only the default Linux/WSL Devin CLI TOML
 | Flag | Meaning |
 | --- | --- |
 | `--project`, `-p` | Project root; defaults to the current directory. |
-| `--tree-depth 0..6` | Repository map depth; `0` selects automatically. |
+| `--tree-depth 0..6` | In `classic`, `0` selects project-size auto depth. In default `bootstrap_hotspot`, the global/hotspot depths come from their dedicated settings and the requested depth may raise hotspot depth. |
 | `--max-turns 1..5` | Remote search rounds. |
-| `--max-commands 1..20` | Restricted local commands per round. |
+| `--max-commands 1..20` | Locally enforced restricted-command cap for each main-search round. |
 | `--max-results 1..30` | Maximum result files. |
 | `--timeout <duration>` | Duration such as `30s`, or milliseconds such as `30000`. |
-| `--exclude <pattern>` | Repeatable excluded path pattern. |
+| `--exclude <pattern>` | Repeatable original-root-anchored boundary for repo maps, bootstrap/hotspots, retries, all five restricted tools, final files, and snippets. |
 | `--include-snippets` | Include code snippets in the external request/result path. Off by default. |
 | `--repo-map-mode` | `classic` or `bootstrap_hotspot`. |
 | `--no-bootstrap` | Skip the bootstrap keyword and hotspot pass. |
@@ -81,6 +81,7 @@ Important environment variables:
 | `FC_RG_PATH` | Explicit ripgrep binary; takes precedence over `PATH`. |
 | `FC_INSECURE_TLS=1` | Disable TLS verification for explicit local troubleshooting only. |
 | `FC_MAX_TURNS`, `FC_MAX_COMMANDS`, `FC_TIMEOUT_MS` | Runtime defaults. |
+| `FC_BOOTSTRAP_MAX_COMMANDS` | Locally enforced restricted-command cap for each bootstrap round. |
 | `FC_REPO_MAP_MODE`, `FC_BOOTSTRAP_ENABLED` | Repository-map defaults. |
 | `FC_INCLUDE_SNIPPETS` | Default snippet behavior. |
 | `FAST_CONTEXT_DEBUG` | Enable progress diagnostics. |
@@ -134,7 +135,7 @@ For `doctor`, `credentials.source_type` is `env` for either environment variable
 
 ### `search --format json`
 
-Successful output contains `files`, optional `rg_patterns`, and `meta`. Each file has a path and zero or more 1-based inclusive line ranges. Treat results as candidates and verify locally.
+Successful output contains `files`, optional `rg_patterns`, and `meta`. Each file has a path and zero or more 1-based inclusive line ranges. Optional `meta.context_trimmed=true` means the conversation was compacted before a request or bounded recovery retry. Treat results as candidates and verify locally.
 
 Failed JSON output contains:
 
@@ -142,10 +143,16 @@ Failed JSON output contains:
 {
   "error": {
     "message": "...",
-    "code": "AUTH_ERROR"
+    "code": "invalid_argument"
+  },
+  "meta": {
+    "error_code": "invalid_argument",
+    "context_trimmed": true
   }
 }
 ```
+
+When the remote returns a valid structured error code, search preserves it in `error.code` (for example, `invalid_argument`); `meta.error_code` mirrors the final failure code when present. A successful recovery keeps `meta.context_trimmed=true` and leaves `meta.error_code` empty. These are existing optional fields; raw response bodies and credentials are never emitted.
 
 ## Exit codes and errors
 
@@ -155,7 +162,7 @@ Failed JSON output contains:
 | `1` | Runtime, network, authentication, rate-limit, service, or protocol failure. |
 | `2` | Invalid arguments, unknown command, or unknown Skill. |
 
-Known error categories include `AUTH_ERROR`, `RATE_LIMITED`, `PAYLOAD_TOO_LARGE`, `TIMEOUT`, `NETWORK`, `SERVER_ERROR`, and `PROTOCOL`.
+Known local error categories include `AUTH_ERROR`, `RATE_LIMITED`, `PAYLOAD_TOO_LARGE`, `TIMEOUT`, `NETWORK`, `SERVER_ERROR`, and `PROTOCOL`. Valid remote structured codes remain lowercase, such as `invalid_argument`. Only an `invalid_argument` received after a tool result may trigger one recovery retry, and only when the rebuilt protobuf is strictly smaller and within the request limit.
 
 The JavaScript launcher forwards the Go process exit status and signal. It injects the bundled `@vscode/ripgrep` path only when the user has not set `FC_RG_PATH`.
 

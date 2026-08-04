@@ -3,7 +3,11 @@ package search
 import (
 	"context"
 	"time"
+
+	"github.com/deqiying/fast-context/internal/pathfilter"
 )
+
+const MaxRequestProtoBytes = 320 * 1024
 
 type Options struct {
 	Query        string
@@ -29,6 +33,8 @@ type Options struct {
 	HotspotMaxBytes      int
 
 	IncludeSnippets bool
+
+	pathPolicy *pathfilter.Policy
 }
 
 type Result struct {
@@ -84,6 +90,7 @@ type Message struct {
 type Client interface {
 	FetchJWT(ctx context.Context, apiKey string, timeout time.Duration) (string, error)
 	CheckRateLimit(ctx context.Context, apiKey, jwt string, timeout time.Duration) (bool, error)
+	RequestSize(apiKey, jwt string, messages []Message, toolDefs string) (int, error)
 	Stream(ctx context.Context, apiKey, jwt string, messages []Message, toolDefs string, timeout time.Duration) ([]byte, error)
 	ParseResponse(data []byte) (string, *ToolCall, error)
 }

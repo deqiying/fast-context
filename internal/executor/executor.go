@@ -16,14 +16,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/deqiying/fast-context/internal/pathfilter"
+	"github.com/deqiying/fast-context/internal/textutil"
 )
 
 const (
 	defaultResultMaxLines = 50
 	defaultLineMaxChars   = 250
+	normalResultBudget    = 64 * 1024
+	resultTruncatedMarker = "\n...[truncated]..."
 )
-
-var commandKeyRe = regexp.MustCompile(`^command\d+$`)
 
 type Command struct {
 	Type       string   `json:"type"`
@@ -40,14 +43,39 @@ type Command struct {
 	TypeFilter string   `json:"type_filter,omitempty"`
 }
 
+type NamedCommand struct {
+	Name    string
+	Command Command
+}
+
+type BatchResult struct {
+	Text         string
+	BytesBefore  int
+	BytesAfter   int
+	Truncated    bool
+	UTF8Repaired bool
+}
+
+type commandResultItem struct {
+	key          string
+	out          string
+	utf8Repaired bool
+}
+
 type Executor struct {
 	root                string
+	resolvedRoot        string
 	rgPath              string
+	policy              *pathfilter.Policy
 	CollectedRgPatterns []string
 	mu                  sync.Mutex
 }
 
 func New(projectRoot string) (*Executor, error) {
+	return NewWithPolicy(projectRoot, nil)
+}
+
+func NewWithPolicy(projectRoot string, policy *pathfilter.Policy) (*Executor, error) {
 	root, err := filepath.Abs(projectRoot)
 	if err != nil {
 		return nil, err
@@ -59,8 +87,12 @@ func New(projectRoot string) (*Executor, error) {
 	if !st.IsDir() {
 		return nil, fmt.Errorf("project root is not a directory: %s", projectRoot)
 	}
+	resolvedRoot := root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		resolvedRoot = filepath.Clean(resolved)
+	}
 	rgPath, _ := FindRipgrep()
-	return &Executor{root: root, rgPath: rgPath}, nil
+	return &Executor{root: root, resolvedRoot: resolvedRoot, rgPath: rgPath, policy: policy}, nil
 }
 
 func FindRipgrep() (string, error) {
@@ -84,65 +116,48 @@ func FindRipgrepWithSource() (path, source string, err error) {
 	return path, "path", nil
 }
 
-func (e *Executor) ExecToolCall(ctx context.Context, args map[string]Command) string {
-	if len(args) == 0 {
-		return "Error: missing or invalid tool args"
+func (e *Executor) ExecToolCall(ctx context.Context, commands []NamedCommand) BatchResult {
+	if len(commands) == 0 {
+		text := "Error: missing or invalid tool args"
+		return BatchResult{Text: text, BytesBefore: len(text), BytesAfter: len(text)}
 	}
-	keys := make([]string, 0, len(args))
-	for key := range args {
-		if commandKeyRe.MatchString(key) {
-			keys = append(keys, key)
-		}
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, _ := strconv.Atoi(keys[i][len("command"):])
-		b, _ := strconv.Atoi(keys[j][len("command"):])
-		return a < b
-	})
-	if len(keys) == 0 {
-		return "Error: missing commandN entries"
-	}
-
-	type item struct {
-		key string
-		out string
-	}
-	results := make([]item, len(keys))
+	results := make([]commandResultItem, len(commands))
 	var wg sync.WaitGroup
-	for i, key := range keys {
+	for i, named := range commands {
 		wg.Add(1)
-		go func(i int, key string) {
+		go func(i int, named NamedCommand) {
 			defer wg.Done()
-			results[i] = item{key: key, out: e.ExecCommand(ctx, args[key])}
-		}(i, key)
+			out, repaired := e.execCommand(ctx, named.Command)
+			results[i] = commandResultItem{key: named.Name, out: out, utf8Repaired: repaired}
+		}(i, named)
 	}
 	wg.Wait()
-
-	var b strings.Builder
-	for _, result := range results {
-		fmt.Fprintf(&b, "<%s_result>\n%s\n</%s_result>", result.key, result.out, result.key)
-	}
-	return b.String()
+	return aggregateResults(results, normalResultBudget)
 }
 
 func (e *Executor) ExecCommand(ctx context.Context, cmd Command) string {
+	out, _ := e.execCommand(ctx, cmd)
+	return out
+}
+
+func (e *Executor) execCommand(ctx context.Context, cmd Command) (string, bool) {
 	switch cmd.Type {
 	case "rg":
-		return e.RG(ctx, cmd.Pattern, cmd.Path, cmd.Include, cmd.Exclude)
+		return e.RG(ctx, cmd.Pattern, cmd.Path, cmd.Include, cmd.Exclude), false
 	case "readfile":
-		return e.ReadFile(cmd.File, cmd.StartLine, cmd.EndLine)
+		return e.readFile(cmd.File, cmd.StartLine, cmd.EndLine)
 	case "tree":
-		return e.Tree(cmd.Path, cmd.Levels)
+		return e.Tree(cmd.Path, cmd.Levels), false
 	case "ls":
-		return e.LS(cmd.Path, cmd.LongFormat, cmd.All)
+		return e.LS(cmd.Path, cmd.LongFormat, cmd.All), false
 	case "glob":
 		filter := cmd.TypeFilter
 		if filter == "" {
 			filter = "all"
 		}
-		return e.Glob(cmd.Pattern, cmd.Path, filter)
+		return e.Glob(cmd.Pattern, cmd.Path, filter), false
 	default:
-		return fmt.Sprintf("Error: unknown command type %q", cmd.Type)
+		return fmt.Sprintf("Error: unknown command type %q", cmd.Type), false
 	}
 }
 
@@ -177,6 +192,17 @@ func (e *Executor) RG(ctx context.Context, pattern, virtualPath string, include,
 			args = append(args, "--glob", "!"+ex)
 		}
 	}
+	// Policy globs are appended last so model-provided positive globs cannot
+	// re-include a path outside the configured boundary.
+	if e.policy != nil {
+		globFlag := "--glob"
+		if e.policy.CaseInsensitive() {
+			globFlag = "--iglob"
+		}
+		for _, g := range e.policy.RGGlobs(realPath) {
+			args = append(args, globFlag, "!"+g)
+		}
+	}
 	args = append(args, "--", pattern, realPath)
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -190,7 +216,7 @@ func (e *Executor) RG(ctx context.Context, pattern, virtualPath string, include,
 
 	err = command.Run()
 	if err == nil {
-		out := stdout.String()
+		out := e.filterRGOutput(stdout.String())
 		if out == "" {
 			return "(no matches)"
 		}
@@ -206,23 +232,29 @@ func (e *Executor) RG(ctx context.Context, pattern, virtualPath string, include,
 }
 
 func (e *Executor) ReadFile(virtualFile string, startLine, endLine int) string {
+	out, _ := e.readFile(virtualFile, startLine, endLine)
+	return out
+}
+
+func (e *Executor) readFile(virtualFile string, startLine, endLine int) (string, bool) {
 	if virtualFile == "" {
-		return "Error: missing or invalid file path"
+		return "Error: missing or invalid file path", false
 	}
 	realPath, err := e.realPath(virtualFile)
 	if err != nil {
-		return "Error: " + err.Error()
+		return "Error: " + err.Error(), false
 	}
 	st, err := os.Stat(realPath)
 	if err != nil || st.IsDir() {
-		return fmt.Sprintf("Error: file not found: %s", virtualFile)
+		return fmt.Sprintf("Error: file not found: %s", virtualFile), false
 	}
 	data, err := os.ReadFile(realPath)
 	if err != nil {
-		return "Error: " + err.Error()
+		return "Error: " + err.Error(), false
 	}
 
-	lines := strings.Split(string(data), "\n")
+	text, repaired := textutil.NormalizeUTF8(string(data))
+	lines := strings.Split(text, "\n")
 	if startLine <= 0 {
 		startLine = 1
 	}
@@ -230,7 +262,7 @@ func (e *Executor) ReadFile(virtualFile string, startLine, endLine int) string {
 		endLine = len(lines)
 	}
 	if startLine > endLine {
-		return ""
+		return "", repaired
 	}
 	var b strings.Builder
 	for i := startLine; i <= endLine; i++ {
@@ -239,7 +271,7 @@ func (e *Executor) ReadFile(virtualFile string, startLine, endLine int) string {
 			b.WriteByte('\n')
 		}
 	}
-	return truncate(b.String())
+	return truncate(b.String()), repaired
 }
 
 func (e *Executor) Tree(virtualPath string, levels int) string {
@@ -257,7 +289,9 @@ func (e *Executor) Tree(virtualPath string, levels int) string {
 	if levels <= 0 {
 		levels = 3
 	}
-	tree, err := buildTree(realPath, virtualPath, levels, nil)
+	tree, err := buildTree(realPath, virtualPath, levels, func(path string) bool {
+		return e.policy != nil && e.policy.Excluded(path)
+	})
 	if err != nil {
 		return fmt.Sprintf("Error: failed to generate tree for %s", virtualPath)
 	}
@@ -284,6 +318,9 @@ func (e *Executor) LS(virtualPath string, longFormat, allFiles bool) string {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
+		if e.policy != nil && e.policy.Excluded(filepath.Join(realPath, name)) {
+			continue
+		}
 		if !allFiles && strings.HasPrefix(name, ".") {
 			continue
 		}
@@ -326,6 +363,12 @@ func (e *Executor) Glob(pattern, virtualPath, typeFilter string) string {
 			return nil
 		}
 		if path == realPath {
+			return nil
+		}
+		if e.policy != nil && e.policy.Excluded(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		name := d.Name()
@@ -379,11 +422,13 @@ func (e *Executor) realPath(virtual string) (string, error) {
 	if err := ensureInside(e.root, candidate); err != nil {
 		return "", err
 	}
+	if e.policy != nil && e.policy.Excluded(candidate) {
+		return "", fmt.Errorf("path is excluded: %s", virtual)
+	}
 	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
-		if err := ensureInside(e.root, resolved); err != nil {
+		if err := ensureInside(e.resolvedRoot, resolved); err != nil {
 			return "", err
 		}
-		return resolved, nil
 	}
 	return candidate, nil
 }
@@ -413,7 +458,7 @@ func ensureInside(root, path string) error {
 	return nil
 }
 
-func buildTree(root, displayRoot string, maxDepth int, exclude func(name, rel string) bool) (string, error) {
+func buildTree(root, displayRoot string, maxDepth int, exclude func(path string) bool) (string, error) {
 	var b strings.Builder
 	b.WriteString(displayRoot)
 	err := writeTree(&b, root, "", 1, maxDepth, exclude)
@@ -423,7 +468,7 @@ func buildTree(root, displayRoot string, maxDepth int, exclude func(name, rel st
 	return b.String(), nil
 }
 
-func writeTree(b *strings.Builder, dir, prefix string, depth, maxDepth int, exclude func(name, rel string) bool) error {
+func writeTree(b *strings.Builder, dir, prefix string, depth, maxDepth int, exclude func(path string) bool) error {
 	if depth > maxDepth {
 		return nil
 	}
@@ -434,8 +479,8 @@ func writeTree(b *strings.Builder, dir, prefix string, depth, maxDepth int, excl
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	filtered := entries[:0]
 	for _, entry := range entries {
-		rel := entry.Name()
-		if exclude != nil && exclude(entry.Name(), rel) {
+		fullPath := filepath.Join(dir, entry.Name())
+		if exclude != nil && exclude(fullPath) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -453,7 +498,7 @@ func writeTree(b *strings.Builder, dir, prefix string, depth, maxDepth int, excl
 		b.WriteString(connector)
 		b.WriteString(entry.Name())
 		if entry.IsDir() {
-			if err := writeTree(b, filepath.Join(dir, entry.Name()), nextPrefix, depth+1, maxDepth, nil); err != nil {
+			if err := writeTree(b, filepath.Join(dir, entry.Name()), nextPrefix, depth+1, maxDepth, exclude); err != nil {
 				continue
 			}
 		}
@@ -462,6 +507,7 @@ func writeTree(b *strings.Builder, dir, prefix string, depth, maxDepth int, excl
 }
 
 func truncate(text string) string {
+	text, _ = textutil.NormalizeUTF8(text)
 	maxLines := envInt("FC_RESULT_MAX_LINES", defaultResultMaxLines, 1, 500)
 	maxChars := envInt("FC_LINE_MAX_CHARS", defaultLineMaxChars, 20, 10000)
 	lines := strings.Split(text, "\n")
@@ -472,15 +518,122 @@ func truncate(text string) string {
 	out := make([]string, 0, limit+1)
 	for i := 0; i < limit; i++ {
 		line := lines[i]
-		if len(line) > maxChars {
-			line = line[:maxChars]
-		}
+		line, _ = textutil.TruncateUTF8Bytes(line, maxChars, "")
 		out = append(out, line)
 	}
 	if len(lines) > maxLines {
 		out = append(out, "... (lines truncated) ...")
 	}
 	return strings.Join(out, "\n")
+}
+
+func (e *Executor) filterRGOutput(text string) string {
+	if e.policy == nil || text == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		match := rgOutputPathRe.FindStringSubmatch(line)
+		if len(match) > 1 && e.policy.Excluded(match[1]) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+var rgOutputPathRe = regexp.MustCompile(`^(.+?):\d+:`)
+
+func aggregateResults(results []commandResultItem, budget int) BatchResult {
+	if budget <= 0 {
+		return BatchResult{Truncated: len(results) > 0}
+	}
+	normalized := make([]commandResultItem, len(results))
+	fullBlocks := make([]string, len(results))
+	lengths := make([]int, len(results))
+	baseBytes := 0
+	repaired := false
+	for i, result := range results {
+		body, wasRepaired := textutil.NormalizeUTF8(result.out)
+		repaired = repaired || result.utf8Repaired || wasRepaired
+		normalized[i] = commandResultItem{key: result.key, out: body}
+		prefix := "<" + result.key + "_result>\n"
+		suffix := "\n</" + result.key + "_result>"
+		fullBlocks[i] = prefix + body + suffix
+		lengths[i] = len(body)
+		baseBytes += len(prefix) + len(suffix)
+	}
+	full := strings.Join(fullBlocks, "")
+	if len(full) <= budget {
+		return BatchResult{
+			Text:         full,
+			BytesBefore:  len(full),
+			BytesAfter:   len(full),
+			UTF8Repaired: repaired,
+		}
+	}
+
+	bodyBudget := budget - baseBytes
+	if bodyBudget < 0 {
+		bodyBudget = 0
+	}
+	allocations := fairByteAllocations(lengths, bodyBudget)
+	var b strings.Builder
+	for i, result := range normalized {
+		body, _ := textutil.TruncateUTF8Bytes(result.out, allocations[i], resultTruncatedMarker)
+		fmt.Fprintf(&b, "<%s_result>\n%s\n</%s_result>", result.key, body, result.key)
+	}
+	out := b.String()
+	return BatchResult{
+		Text:         out,
+		BytesBefore:  len(full),
+		BytesAfter:   len(out),
+		Truncated:    true,
+		UTF8Repaired: repaired,
+	}
+}
+
+func fairByteAllocations(lengths []int, budget int) []int {
+	allocations := make([]int, len(lengths))
+	remaining := make([]int, len(lengths))
+	for i := range lengths {
+		remaining[i] = i
+	}
+	for len(remaining) > 0 && budget > 0 {
+		share := budget / len(remaining)
+		if share == 0 {
+			for i := 0; i < budget && i < len(remaining); i++ {
+				allocations[remaining[i]]++
+			}
+			break
+		}
+		next := remaining[:0]
+		usedShort := false
+		for _, index := range remaining {
+			if lengths[index] <= share {
+				allocations[index] = lengths[index]
+				budget -= lengths[index]
+				usedShort = true
+				continue
+			}
+			next = append(next, index)
+		}
+		if usedShort {
+			remaining = next
+			continue
+		}
+		for _, index := range remaining {
+			allocations[index] = share
+			budget -= share
+		}
+		for i := 0; budget > 0 && i < len(remaining); i++ {
+			allocations[remaining[i]]++
+			budget--
+		}
+		break
+	}
+	return allocations
 }
 
 func envInt(name string, def, minValue, maxValue int) int {
