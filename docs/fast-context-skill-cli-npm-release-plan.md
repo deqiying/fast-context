@@ -176,7 +176,7 @@ fast-context/
 
 `dist/npm-stage` 和 `dist/npm` 是打包脚本生成的临时目录，不纳入 Git。脚本从根目录复制唯一的 `LICENSE` 到每个 staging package，避免在源码中长期维护四份许可证副本。
 
-不在 Skill 目录增加 `README.md`、`INSTALLATION_GUIDE.md` 或重复的快速参考文件。详细命令契约只放在 `references/cli-contract.md`，主 `SKILL.md` 保持短小。
+不在 Skill 目录增加 `README.md`、`INSTALLATION_GUIDE.md` 或重复的快速参考文件。详细命令契约只放在 `references/cli-contract.md`，主 `SKILL.md` 保持短小；安装后的 CLI 通过 allowlisted `skills show --reference cli-contract` 暴露该 reference，不开放任意资源路径。
 
 ## 8. CLI 契约设计
 
@@ -189,7 +189,8 @@ fast-context search <query> [flags]
 fast-context key extract [flags]
 fast-context doctor [flags]
 fast-context skills list [flags]
-fast-context skills show <skill> [flags]
+fast-context skills show <skill> [--reference cli-contract] [flags]
+fast-context schema [--format json] [--pretty] [<canonical-command-path>...]
 fast-context version
 fast-context --version
 fast-context -v
@@ -225,12 +226,15 @@ fast-context skills list --format json
 #### `skills show`
 
 ```powershell
-fast-context skills show fast-context --format content
-fast-context skills show fast-context --format json
+fast-context skills show --format content fast-context
+fast-context skills show --format json fast-context
+fast-context skills show --format content --reference cli-contract fast-context
 ```
 
 - `content`：只向 stdout 输出原始 `SKILL.md`，便于 Agent 直接加载。
 - `json`：输出 Skill 定义和 `content` 字段，便于程序消费。
+- `--reference cli-contract`：通过稳定逻辑 ID 读取同版本 `references/cli-contract.md`；content 模式输出原始 Markdown，JSON 模式额外返回 `resource`。
+- 未传 `--reference` 时保持原始 main-Skill content/JSON shape；不接受任意 filesystem/embed path。
 - 未知 Skill 返回退出码 `2`，并列出可用名称。
 - 该命令只读取编译进二进制的资源，不联网、不写文件。
 
@@ -308,10 +312,11 @@ Skill 名称固定为 `fast-context`。frontmatter 只包含 `name` 和 `descrip
 2. 运行 `fast-context --version` 验证入口和版本。
 3. CLI 缺失时说明 npm 是直接安装/更新 owner；首次全局安装前取得用户授权。
 4. 获得授权后安装并验证版本；Alpha 与稳定版都使用默认的 `npm install -g @deqiying/fast-context`，需要可复现安装时显式固定版本。
-5. 运行 `fast-context doctor --format json` 检查项目、凭据和 `ripgrep`。
-6. 在外部传输边界允许时运行 `search`；默认不加 `--include-snippets`。
-7. 使用返回的文件、行号和 grep keywords 做本地确定性复核。
-8. CLI 因网络、认证或服务错误不可用时，优先回退到环境中已安装且已有可用索引的本地 `codesearch`；新索引只在后台创建，当前任务不等待索引完成，没有可用索引时继续使用 `rg` 和直接文件读取。
+5. 已知 argv 直接执行；参数或版本不确定时读取 targeted `schema`，full manifest 只用于通用发现/缓存，同版本任务内复用。旧 CLI 不支持 schema 时回退到该二进制内嵌 Skill，不解析 help 或静默升级。
+6. 运行 `fast-context doctor --format json` 检查项目、凭据和 `ripgrep`，读取 JSON `ok` 而不是只看 exit code。
+7. 在外部传输边界允许时运行 compact JSON `search`；默认不加 `--include-snippets` 或 `--pretty`。
+8. 使用返回的文件、行号和 grep keywords 做本地确定性复核。
+9. CLI 因网络、认证或服务错误不可用时，优先回退到环境中已安装且已有可用索引的本地 `codesearch`；新索引只在后台创建，当前任务不等待索引完成，没有可用索引时继续使用 `rg` 和直接文件读取。
 
 在 mise 管理 Node 的环境中，Skill 必须区分直接 owner 与外层 runtime manager：
 
@@ -326,7 +331,7 @@ mise -> Node/npm -> fast-context
 | 文件 | 内容 | 加载时机 |
 | --- | --- | --- |
 | `SKILL.md` | 触发边界、主流程、安全边界、fallback | Skill 触发后始终加载 |
-| `references/cli-contract.md` | 完整 flags、JSON schema、退出码、常见错误、回归命令 | 需要精确参数或调试时加载 |
+| `references/cli-contract.md` | schema-to-argv、结构化输出、凭据/错误语义和回归命令 | 需要精确参数或调试时通过 Skill folder 或 `skills show --reference cli-contract` 加载 |
 | `agents/openai.yaml` | UI 展示元数据 | 由宿主读取，Agent 不主动加载 |
 
 `agents/openai.yaml` 应满足：
@@ -338,7 +343,7 @@ mise -> Node/npm -> fast-context
 - `policy.allow_implicit_invocation` 保持 `true`。
 - 不声明 MCP dependency，因为目标形态是本地 CLI。
 
-实现阶段使用 `skill-creator` 的 `init_skill.py` 初始化目录，并使用 `generate_openai_yaml.py` 生成元数据，避免手写格式漂移。
+初始化阶段使用 `skill-creator` 的 `init_skill.py` 创建目录。更新 interface 时可使用 `generate_openai_yaml.py` 生成元数据；该脚本当前只生成 `interface`，因此必须另行保留并测试 `policy.allow_implicit_invocation: true`，避免生成过程静默删除 policy。
 
 ## 10. npm 包设计
 
@@ -375,6 +380,7 @@ mise -> Node/npm -> fast-context
 - 唯一的 `name` 和统一 `version`。
 - 正确的 `os`、`cpu`。
 - staging manifest 使用 `files = ["bin/", "LICENSE"]`。
+- Linux 与 macOS 包使用包名专属的 `bin` 映射指向原生二进制，使 npm 即使解包由 Windows 生成的 tarball 也会恢复执行权限；Windows 包不额外暴露该映射。
 - `license`、`repository`、`publishConfig.access`。
 - 不声明安装脚本，不在用户机器下载二进制。
 
@@ -452,10 +458,11 @@ Go 二进制通过 `-ldflags` 注入：
 3. 注入版本、commit 和 date。
 4. 验证本机平台二进制 `--version`。
 5. 在 `dist/npm-stage` 为四个包创建隔离 staging 目录，并复制 manifest、launcher/README、平台二进制和根 `LICENSE`。
-6. 校验每个 staging package 中的 `LICENSE` 与根文件 SHA256 一致。
-7. 只从 staging 目录执行 `npm pack`。
-8. 输出 tarball 到 `dist/npm`。
-9. 不执行 `npm publish`。
+6. 校验非 Windows 平台 manifest 的包名专属 `bin` 映射；Unix host 通过 .NET `UnixFileMode` 保留 staging/prebuilt 执行位，Windows 产出的 tarball 则由 npm 在安装时恢复，不依赖 PATH 中的 POSIX `chmod`。
+7. 校验每个 staging package 中的 `LICENSE` 与根文件 SHA256 一致。
+8. 只从 staging 目录执行 `npm pack`。
+9. 输出 tarball 到 `dist/npm`。
+10. 不执行 `npm publish`。
 
 ### 11.3 GitHub Actions
 
@@ -720,7 +727,7 @@ plugins/codex/tool-skills/
 | Go unit | 现有 `go test ./...` | 全部通过 |
 | Go static | `go vet ./...` | 无错误 |
 | Skill | `quick_validate.py` | frontmatter、命名、目录结构通过 |
-| Skill embed | `skills show` 对比源文件 | 字节内容一致，统一 LF |
+| Skill embed | `skills show` 对比主 Skill/reference 源文件 | 字节内容一致，统一 LF；任意路径 reference 被拒绝 |
 | CLI | help/version/unknown/skills/doctor | 退出码和 stdout/stderr 符合契约 |
 | Windsurf client | `httptest` 模拟 200/401/429/500/timeout | 错误分类和重试符合预期 |
 | Cross build | 三个平台 `CGO_ENABLED=0 go build` | 全部生成非空二进制 |
@@ -824,7 +831,7 @@ plugins/codex/tool-skills/
 
 - [x] npm 包名、owner、license 已确认。
 - [x] `fast-context --version` 与 `fast-context version` 一致。
-- [x] `skills list/show` 可稳定输出内置 Skill。
+- [x] `skills list/show` 可稳定输出内置 Skill；主 Skill 与 allowlisted reference 均可读取。
 - [x] Skill frontmatter、正文和 `agents/openai.yaml` 验证通过。
 - [x] npm 入口包与三个平台包完成 dry-run、pack 和临时安装。
 - [x] npm 安装后无需系统 `rg` 即可通过 doctor。

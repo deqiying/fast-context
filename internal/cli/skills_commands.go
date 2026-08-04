@@ -21,9 +21,10 @@ type skillsListOutput struct {
 }
 
 type skillShowOutput struct {
-	OK      bool                  `json:"ok"`
-	Skill   skillDefinitionOutput `json:"skill"`
-	Content string                `json:"content"`
+	OK       bool                  `json:"ok"`
+	Skill    skillDefinitionOutput `json:"skill"`
+	Resource string                `json:"resource,omitempty"`
+	Content  string                `json:"content"`
 }
 
 func runParsedSkillsList(parsed ParsedCommand, stdout, _ io.Writer) int {
@@ -47,13 +48,20 @@ func runParsedSkillsShow(parsed ParsedCommand, stdout, stderr io.Writer) int {
 	skillName := parsed.String("skill")
 	format := parsed.String("format")
 	pretty := parsed.Bool("pretty")
+	reference := parsed.String("reference")
 	definition, err := skills.Describe(skillName)
 	if err != nil {
 		return usageError(stderr, err.Error())
 	}
-	content, err := skills.ReadMarkdown(skillName)
+	resource := ""
+	var content string
+	if reference == "" {
+		content, err = skills.ReadMarkdown(skillName)
+	} else {
+		content, resource, err = skills.ReadReference(skillName, reference)
+	}
 	if err != nil {
-		fmt.Fprintf(stderr, "Error: failed to read embedded skill: %s\n", err)
+		fmt.Fprintf(stderr, "Error: failed to read embedded skill resource: %s\n", err)
 		return 1
 	}
 	if format == "content" {
@@ -61,9 +69,10 @@ func runParsedSkillsShow(parsed ParsedCommand, stdout, stderr io.Writer) int {
 		return 0
 	}
 	return encodeJSON(stdout, skillShowOutput{
-		OK:      true,
-		Skill:   skillDefinitionData(definition),
-		Content: content,
+		OK:       true,
+		Skill:    skillDefinitionData(definition),
+		Resource: resource,
+		Content:  content,
 	}, pretty)
 }
 

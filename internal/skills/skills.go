@@ -3,6 +3,7 @@ package skills
 import (
 	"embed"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -23,6 +24,10 @@ var definition = Definition{
 	Description:  "Locate unknown local code entrypoints with remote semantic search, then verify candidates with deterministic local tools.",
 }
 
+var referenceAssets = map[string]string{
+	"cli-contract": "references/cli-contract.md",
+}
+
 func Definitions() []Definition {
 	return []Definition{cloneDefinition(definition)}
 }
@@ -38,11 +43,39 @@ func ReadMarkdown(name string) (string, error) {
 	if !matches(name) {
 		return "", unknownSkillError(name)
 	}
-	data, err := assets.ReadFile("assets/fast-context/SKILL.md")
+	return readTextAsset("SKILL.md")
+}
+
+func ReadReference(name, reference string) (string, string, error) {
+	if !matches(name) {
+		return "", "", unknownSkillError(name)
+	}
+	resource, ok := referenceAssets[reference]
+	if !ok {
+		return "", "", fmt.Errorf("unknown reference: %s; available references: %s", reference, strings.Join(referenceNames(), ", "))
+	}
+	content, err := readTextAsset(resource)
+	if err != nil {
+		return "", "", err
+	}
+	return content, resource, nil
+}
+
+func readTextAsset(resource string) (string, error) {
+	data, err := assets.ReadFile("assets/fast-context/" + resource)
 	if err != nil {
 		return "", err
 	}
 	return strings.ReplaceAll(string(data), "\r\n", "\n"), nil
+}
+
+func referenceNames() []string {
+	names := make([]string, 0, len(referenceAssets))
+	for name := range referenceAssets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func Names() []string {

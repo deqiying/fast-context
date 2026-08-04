@@ -26,7 +26,7 @@ For source development:
 ```powershell
 go run ./cmd/fast-context --version
 go run ./cmd/fast-context doctor --project . --format json
-go run ./cmd/fast-context search "where is auth handled" --project . --tree-depth 0 --format json
+go run ./cmd/fast-context search --project . --format json "where is auth handled"
 ```
 
 ## Commands
@@ -37,7 +37,7 @@ go run ./cmd/fast-context search "where is auth handled" --project . --tree-dept
 | `key extract [--path <path>]` | Inspect the default Linux/WSL Devin CLI TOML or an explicitly selected TOML/`state.vscdb`; databases are never discovered automatically. |
 | `doctor` | Check project path, ripgrep, credentials, and build metadata. |
 | `skills list` | List embedded Agent Skills. |
-| `skills show <skill>` | Return the raw embedded `SKILL.md` or structured JSON. |
+| `skills show <skill> [--reference cli-contract]` | Return the raw embedded `SKILL.md`, an allowlisted reference, or structured JSON. |
 | `schema [--format json] [--pretty] [<canonical-command-path>...]` | Return the versioned, machine-readable CLI command manifest in full or for one canonical command path. |
 | `version`, `--version`, `-v` | Print the same linker-injected build metadata. |
 
@@ -45,8 +45,11 @@ Load the version-matched Agent Skill directly from the CLI:
 
 ```powershell
 fast-context skills list --format json
-fast-context skills show fast-context --format content
+fast-context skills show --format content fast-context
+fast-context skills show --format content --reference cli-contract fast-context
 ```
+
+`--reference` accepts the logical ID `cli-contract`, not a filesystem or embed path. Omitting it preserves the original main-Skill content/JSON shape. This makes the Skill's progressive-disclosure reference available from the same versioned binary without exposing arbitrary embedded resources.
 
 ## CLI command manifest
 
@@ -62,6 +65,8 @@ fast-context schema --format json key extract
 ```
 
 Targets accept canonical paths only. Compatibility aliases remain executable, but callers should not generate them from the manifest. `schema` is JSON-only and static: it does not read runtime configuration, credentials, a project, the current directory, or environment values; it does not access the network, write files, or invoke `search`, `doctor`, `key extract`, or Skill-reading handlers. The manifest describes command input and coarse output/exit-code contracts; it does not register a native tool automatically. A host that needs native tool calling must explicitly consume and map the manifest.
+
+Use known argv directly, reuse a targeted definition for the same CLI version within one task, and reserve the full manifest for generic discovery or cache refresh. If an older binary reports `schema` as unknown, load its embedded version-matched Skill with `fast-context skills show --format content fast-context`; do not guess new flags or parse `--help` as a machine contract.
 
 ## JSON presentation
 

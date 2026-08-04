@@ -1,7 +1,7 @@
 interface:
   display_name: "Fast Context"
   short_description: "Locate relevant local code with semantic search"
-  default_prompt: "Use $fast-context to locate the implementation behind this request, then verify the returned code locally."
+  default_prompt: "Use $fast-context to locate an unknown local-code entrypoint, then verify every candidate with deterministic local tools."
 
 policy:
   allow_implicit_invocation: true

@@ -162,6 +162,10 @@ func TestHelpExposesPrettyOnlyForJSONCommands(t *testing.T) {
 	if code != 0 || stderr != "" || strings.Contains(stdout, "--pretty") {
 		t.Fatalf("version help unexpectedly exposes pretty: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+	code, stdout, stderr = executeForTest(t, "skills", "show", "--help")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "--reference <cli-contract>") || !strings.Contains(stdout, "Read an allowlisted reference embedded with the Skill.") {
+		t.Fatalf("skills show help omits reference contract: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 }
 
 func TestCommandBindingsCoverRegistryExactly(t *testing.T) {
@@ -318,6 +322,69 @@ func TestSkillsListAndShow(t *testing.T) {
 	assertJSONSemanticallyEqual(t, stdout, prettyShow)
 	if !strings.Contains(prettyShow, `\u003c`) {
 		t.Fatal("pretty skills JSON no longer uses encoding/json HTML escaping")
+	}
+	var defaultEnvelope map[string]any
+	if err := json.Unmarshal([]byte(stdout), &defaultEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := defaultEnvelope["resource"]; ok {
+		t.Fatal("default skills show JSON unexpectedly exposes a resource field")
+	}
+	var legacy bytes.Buffer
+	legacyCode := encodeJSON(&legacy, struct {
+		OK      bool                  `json:"ok"`
+		Skill   skillDefinitionOutput `json:"skill"`
+		Content string                `json:"content"`
+	}{OK: shown.OK, Skill: shown.Skill, Content: shown.Content}, false)
+	if legacyCode != 0 || legacy.String() != stdout {
+		t.Fatalf("default skills show JSON changed bytes: code=%d equal=%t", legacyCode, legacy.String() == stdout)
+	}
+}
+
+func TestSkillsShowAllowlistedReference(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "skills", "assets", "fast-context", "references", "cli-contract.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.ReplaceAll(string(source), "\r\n", "\n")
+
+	code, content, stderr := executeForTest(t, "skills", "show", "--format", "content", "--reference", "cli-contract", "fast-context")
+	if code != 0 || stderr != "" || content != want {
+		t.Fatalf("skills show reference code=%d equal=%t stderr=%q", code, content == want, stderr)
+	}
+	prettyCode, prettyContent, prettyStderr := executeForTest(t, "skills", "show", "--format", "content", "--pretty", "--reference", "cli-contract", "fast-context")
+	if prettyCode != 0 || prettyStderr != "" || prettyContent != want {
+		t.Fatalf("pretty reference content code=%d equal=%t stderr=%q", prettyCode, prettyContent == want, prettyStderr)
+	}
+
+	code, compact, stderr := executeForTest(t, "skills", "show", "--format", "json", "--reference", "cli-contract", "fast-context")
+	if code != 0 || stderr != "" {
+		t.Fatalf("skills show reference JSON code=%d stderr=%q", code, stderr)
+	}
+	assertCompactJSONText(t, compact)
+	var envelope struct {
+		OK       bool   `json:"ok"`
+		Resource string `json:"resource"`
+		Content  string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(compact), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK || envelope.Resource != "references/cli-contract.md" || envelope.Content != want {
+		t.Fatalf("unexpected reference JSON: %#v", envelope)
+	}
+	prettyCode, pretty, prettyStderr := executeForTest(t, "skills", "show", "--format", "json", "--pretty", "--reference", "cli-contract", "fast-context")
+	if prettyCode != 0 || prettyStderr != "" {
+		t.Fatalf("pretty reference JSON code=%d stderr=%q", prettyCode, prettyStderr)
+	}
+	assertPrettyJSONText(t, pretty)
+	assertJSONSemanticallyEqual(t, compact, pretty)
+
+	for _, reference := range []string{"missing", "../cli-contract", "references/cli-contract.md", "C:\\private\\cli-contract.md"} {
+		code, stdout, stderr := executeForTest(t, "skills", "show", "--reference", reference, "fast-context")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "--reference must be cli-contract") {
+			t.Fatalf("invalid reference %q code=%d stdout=%q stderr=%q", reference, code, stdout, stderr)
+		}
 	}
 }
 

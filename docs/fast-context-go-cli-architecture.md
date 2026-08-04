@@ -43,8 +43,8 @@
 MVP 目标是一个可独立运行的 Go CLI：
 
 ```powershell
-fast-context search "where is auth handled" --project . --tree-depth 3 --max-turns 3 --max-results 10
-fast-context search "database connection pool" --project E:\Project\GoLand\sub2api --format json
+fast-context search --project . --tree-depth 3 --max-turns 3 --max-results 10 "where is auth handled"
+fast-context search --project E:\Project\GoLand\sub2api --format json "database connection pool"
 fast-context key extract --path <state.vscdb>
 fast-context doctor
 ```
@@ -172,10 +172,12 @@ fast-context search <query>
 fast-context key extract
 fast-context doctor
 fast-context skills list
-fast-context skills show <skill>
+fast-context skills show <skill> [--reference cli-contract]
 fast-context schema [--format json] [--pretty] [<canonical-command-path>...]
 fast-context version
 ```
+
+`skills show` 默认返回主 `SKILL.md`。可选 `--reference cli-contract` 只接受稳定逻辑 ID，并从同一二进制返回 `references/cli-contract.md`；它不接受 filesystem/embed path。未传该 option 时既有 content/JSON shape 不变，读取仍是无网络、无外部文件访问的 `embedded_resource_read`。
 
 建议全局 flag：
 

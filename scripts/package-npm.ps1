@@ -94,6 +94,17 @@ function Assert-StageFiles {
     }
 }
 
+function Set-UnixExecutable {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+        return
+    }
+    $executeBits = [System.IO.UnixFileMode]::UserExecute -bor [System.IO.UnixFileMode]::GroupExecute -bor [System.IO.UnixFileMode]::OtherExecute
+    $mode = [System.IO.File]::GetUnixFileMode($Path)
+    [System.IO.File]::SetUnixFileMode($Path, ($mode -bor $executeBits))
+}
+
 function Get-NativeTargetID {
     $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
     if ($architecture -eq "amd64") {
@@ -131,6 +142,7 @@ $platforms = @(
         GOOS = "windows"
         GOARCH = "amd64"
         BinaryName = "fast-context.exe"
+        InstallBinName = $null
     },
     @{
         ID = "linux-x64"
@@ -139,6 +151,7 @@ $platforms = @(
         GOOS = "linux"
         GOARCH = "amd64"
         BinaryName = "fast-context"
+        InstallBinName = "fast-context-linux-x64"
     },
     @{
         ID = "darwin-arm64"
@@ -147,6 +160,7 @@ $platforms = @(
         GOOS = "darwin"
         GOARCH = "arm64"
         BinaryName = "fast-context"
+        InstallBinName = "fast-context-darwin-arm64"
     }
 )
 
@@ -172,6 +186,13 @@ foreach ($platform in $platforms) {
     }
     if ($manifest.version -ne $version) {
         throw "$manifestPath version $($manifest.version) does not match $version"
+    }
+    if ($null -ne $platform.InstallBinName) {
+        $installBinPath = Get-JsonPropertyValue -Object $manifest.bin -Name $platform.InstallBinName
+        $expectedBinPath = "bin/$($platform.BinaryName)"
+        if ($installBinPath -ne $expectedBinPath) {
+            throw "$manifestPath must map bin.$($platform.InstallBinName) to $expectedBinPath so npm restores execute permissions after install"
+        }
     }
     $dependencyVersion = Get-JsonPropertyValue -Object $entryManifest.optionalDependencies -Name $platform.PackageName
     if ($dependencyVersion -ne $version) {
@@ -235,7 +256,9 @@ try {
         }
 
         if ($platform.GOOS -ne "windows") {
-            Invoke-Checked -FilePath "chmod" -Arguments @("+x", $outputPath)
+            # Preserve executable prebuilt artifacts on Unix without depending on a PATH-provided chmod.
+            # On Windows, the package-specific bin mapping makes npm restore this bit after installation.
+            Set-UnixExecutable -Path $outputPath
         }
         Assert-StageFiles -StageDir $stageDir -Expected @("bin/$($platform.BinaryName)", "LICENSE", "package.json")
     }
@@ -340,7 +363,23 @@ try {
             throw "Launcher did not preserve Go exit code 2; got $LASTEXITCODE"
         }
 
-        $schemaText = (Get-CheckedOutput -FilePath $commandPath -Arguments @("schema", "--format", "json", "search")) -join "`n"
+        $skillLines = @(Get-CheckedOutput -FilePath $commandPath -Arguments @("skills", "show", "--format", "content", "fast-context"))
+        $skillText = $skillLines -join "`n"
+        if ($skillText -notmatch '(?m)^# Fast Context$' -or $skillText -notmatch 'external-service operation') {
+            throw "Installed launcher did not return the embedded fast-context Skill"
+        }
+
+        $referenceLines = @(Get-CheckedOutput -FilePath $commandPath -Arguments @("skills", "show", "--format", "content", "--reference", "cli-contract", "fast-context"))
+        $referenceText = $referenceLines -join "`n"
+        if ($referenceText -notmatch '(?m)^# fast-context CLI contract$' -or $referenceText -notmatch '(?m)^## Consume the command manifest$') {
+            throw "Installed launcher did not return the allowlisted cli-contract reference"
+        }
+
+        $schemaLines = @(Get-CheckedOutput -FilePath $commandPath -Arguments @("schema", "--format", "json", "search"))
+        if ($schemaLines.Count -ne 1) {
+            throw "Installed launcher schema must default to one compact JSON line; got $($schemaLines.Count) lines"
+        }
+        $schemaText = $schemaLines -join "`n"
         $schema = $schemaText | ConvertFrom-Json
         if ($schema.kind -ne "fast_context_cli_command_manifest") {
             throw "Installed launcher schema has unexpected kind: $schemaText"
@@ -362,6 +401,17 @@ try {
         $searchCommandPath = @($schemaCommands[0].path)
         if ($searchCommandPath.Count -ne 1 -or $searchCommandPath[0] -ne "search") {
             throw "Installed launcher schema search command has unexpected canonical path: $schemaText"
+        }
+
+        $prettySchemaLines = @(Get-CheckedOutput -FilePath $commandPath -Arguments @("schema", "--format", "json", "--pretty", "search"))
+        if ($prettySchemaLines.Count -le 1) {
+            throw "Installed launcher pretty schema must span multiple lines"
+        }
+        $prettySchema = ($prettySchemaLines -join "`n") | ConvertFrom-Json
+        $compactComparable = $schema | ConvertTo-Json -Depth 100 -Compress
+        $prettyComparable = $prettySchema | ConvertTo-Json -Depth 100 -Compress
+        if ($compactComparable -ne $prettyComparable) {
+            throw "Installed launcher compact and pretty schema outputs differ semantically"
         }
 
         $env:FC_RG_PATH = $null

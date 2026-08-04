@@ -3,6 +3,9 @@
   "version": "0.1.6",
   "description": "macOS arm64 binary for fast-context.",
   "license": "MIT",
+  "bin": {
+    "fast-context-darwin-arm64": "bin/fast-context"
+  },
   "os": [
     "darwin"
   ],

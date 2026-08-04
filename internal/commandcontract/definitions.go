@@ -259,6 +259,13 @@ func skillsShowDefinition() CommandDefinition {
 		Options: []OptionDefinition{
 			formatOptionNormalized("content", []string{"content", "json"}),
 			prettyOption(),
+			{
+				Name:        "reference",
+				Flag:        "--reference",
+				Type:        TypeString,
+				Description: "Read an allowlisted reference embedded with the Skill.",
+				Enum:        []string{"cli-contract"},
+			},
 		},
 		Availability: staticAvailability(),
 		SideEffects:  []string{"embedded_resource_read"},

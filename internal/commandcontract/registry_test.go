@@ -162,7 +162,17 @@ func TestJSONCommandsExposePrettyPresentationOption(t *testing.T) {
 		if len(definition.Options) == 0 {
 			t.Fatalf("command %q has no options", id)
 		}
-		pretty := definition.Options[len(definition.Options)-1]
+		pretty, ok := optionByName(definition, "pretty")
+		if !ok {
+			t.Fatalf("command %q has no pretty option", id)
+		}
+		prettyOrder := -1
+		for index, option := range definition.Options {
+			if option.Name == "pretty" {
+				prettyOrder = index
+				break
+			}
+		}
 		defaultValue, defaultOK := pretty.Default.(bool)
 		if pretty.Name != "pretty" || pretty.Flag != "--pretty" || pretty.Type != TypeBoolean || !pretty.HasDefault || !defaultOK || defaultValue {
 			t.Fatalf("command %q pretty option=%#v", id, pretty)
@@ -179,7 +189,7 @@ func TestJSONCommandsExposePrettyPresentationOption(t *testing.T) {
 			t.Fatalf("command %q pretty schema=%#v", id, property)
 		}
 		binding := property["x-cli-binding"].(map[string]any)
-		if binding["kind"] != "flag" || binding["token"] != "--pretty" || binding["order"] != len(definition.Options)-1 {
+		if binding["kind"] != "flag" || binding["token"] != "--pretty" || binding["order"] != prettyOrder {
 			t.Fatalf("command %q pretty binding=%#v", id, binding)
 		}
 	}
@@ -187,6 +197,29 @@ func TestJSONCommandsExposePrettyPresentationOption(t *testing.T) {
 	version, _ := registry.LookupID("version")
 	if len(version.Options) != 0 {
 		t.Fatalf("version unexpectedly exposes options: %#v", version.Options)
+	}
+}
+
+func TestSkillsShowExposesAllowlistedReferenceOption(t *testing.T) {
+	definition, ok := MustDefaultRegistry().LookupID("skills.show")
+	if !ok {
+		t.Fatal("skills.show definition is missing")
+	}
+	reference, ok := optionByName(definition, "reference")
+	if !ok {
+		t.Fatal("skills.show reference option is missing")
+	}
+	if reference.Flag != "--reference" || reference.Type != TypeString || !reflect.DeepEqual(reference.Enum, []string{"cli-contract"}) || reference.HasDefault {
+		t.Fatalf("unexpected skills.show reference option: %#v", reference)
+	}
+	if definition.Options[len(definition.Options)-1].Name != "reference" {
+		t.Fatalf("skills.show reference option must append without reordering existing bindings: %#v", definition.Options)
+	}
+	properties := definition.InputSchema()["properties"].(map[string]any)
+	property := properties["reference"].(map[string]any)
+	binding := property["x-cli-binding"].(map[string]any)
+	if property["type"] != "string" || !reflect.DeepEqual(property["enum"], []string{"cli-contract"}) || binding["token"] != "--reference" || binding["order"] != len(definition.Options)-1 {
+		t.Fatalf("unexpected skills.show reference schema: %#v", property)
 	}
 }
 

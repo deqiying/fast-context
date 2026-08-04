@@ -738,6 +738,18 @@
               "true": "presence_flag"
             }
           },
+          "reference": {
+            "description": "Read an allowlisted reference embedded with the Skill.",
+            "enum": [
+              "cli-contract"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 2,
+              "token": "--reference"
+            }
+          },
           "skill": {
             "description": "Skill ID or alias.",
             "minLength": 1,

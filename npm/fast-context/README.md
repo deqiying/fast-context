@@ -24,16 +24,20 @@ The launcher installs platform-specific Go binaries as optional dependencies and
 ## Agent workflow
 
 ```sh
+fast-context skills show --format content fast-context
 fast-context doctor --project . --format json
-fast-context skills show fast-context --format content
 # Read the exact contract for a known command before constructing unfamiliar argv.
 fast-context schema --format json search
-fast-context search "where is authentication handled" --project . --format json
+fast-context search --project . --format json "where is authentication handled"
+# Load exact output/error details only when needed.
+fast-context skills show --format content --reference cli-contract fast-context
 ```
 
-`search` sends the query, a repository map, and requested restricted-tool results to Windsurf. Do not use it for private code when external transmission is not authorized. Snippets are disabled by default.
+`search` sends the query, a repository map, and requested restricted-tool results to Windsurf. Once the Skill is loaded and doctor reports `ok=true`, no separate per-search authorization is required; an explicit instruction forbidding external transmission still wins. Snippets are disabled by default, and every result remains a candidate until local deterministic tools verify it.
 
 `schema --format json` returns the full versioned CLI command manifest; `schema --format json <canonical-command-path...>` returns one definition, such as `search` or `key extract`. Prefer the targeted form when the command is known, and use the full form only for first-time discovery or caching. It accepts canonical paths only, is JSON-only and static, and does not read configuration, credentials, project/CWD, or environment values; it does not access the network, write files, or run normal command handlers. The manifest is not native-tool registration: a host must explicitly map it if native tools are required.
+
+Use known argv directly and reuse a targeted definition for the same CLI version within a task. If `schema` is unknown on an older installation, load that binary's version-matched Skill with `skills show` instead of guessing newer flags or silently updating. `--reference cli-contract` is allowlisted and cannot read arbitrary paths; without it, `skills show` keeps the original main-Skill output shape.
 
 ## JSON presentation
 
