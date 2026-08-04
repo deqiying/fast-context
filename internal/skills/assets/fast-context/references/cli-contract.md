@@ -42,12 +42,12 @@ Alpha releases intentionally use the default `latest` channel until the stable-r
 ## Commands
 
 ```text
-fast-context search <query> [flags]
-fast-context key extract [flags]
-fast-context doctor [flags]
-fast-context skills list [--format text|json]
-fast-context skills show <skill> [--format content|json]
-fast-context schema [--format json] [<canonical-command-path>...]
+fast-context search <query> [flags, including --pretty]
+fast-context key extract [flags, including --pretty]
+fast-context doctor [flags, including --pretty]
+fast-context skills list [--format text|json] [--pretty]
+fast-context skills show <skill> [--format content|json] [--pretty]
+fast-context schema [--format json] [--pretty] [<canonical-command-path>...]
 fast-context version
 fast-context --version
 fast-context -v
@@ -64,6 +64,14 @@ Without `--path`, `key extract` checks only the default Linux/WSL Devin CLI TOML
 Use the targeted form when the intended command is known; use the full manifest only for first-time generic discovery or caching. The manifest records public command paths, aliases, input schema and argv bindings, default sources/normalization, availability and side effects, plus coarse output and exit-code contracts. Each flag binding includes a stable `order`; adapters emit flags in that order before any positional values. It does not invent a complete schema for existing search payloads, doctor maps, or credential results.
 
 `schema` is JSON-only and static. It completes before runtime default/configuration resolution and does not read credentials, project files, the current directory, or environment values. It does not access the network, write files, or invoke `search`, `doctor`, `key extract`, or Skill-reading handlers. It is not native-tool registration: an Agent or host must deliberately consume and map the returned manifest before using it as a native tool.
+
+## JSON presentation
+
+When `search`, `key extract`, `doctor`, `skills list`, `skills show`, or `schema` selects JSON, stdout defaults to one compact JSON line followed by one LF. Pass `--pretty` for an explicit two-space-indented, human-readable rendering with the same trailing LF. The choice depends only on argv, not TTY, pipes, redirection, or the host environment.
+
+`--pretty` is presentation-only: it does not change JSON fields, types, ordering, HTML-escaping policy, redaction, exit codes, or stdout/stderr routing. It is ignored when a command uses `text` or `content`, and it never implicitly changes `--format` to JSON. The existing default format for each command is unchanged. `version` is text-only and does not support `--pretty`.
+
+JSON code blocks below use pretty layout for documentation readability; runtime JSON remains compact unless argv includes `--pretty`.
 
 ## Search flags and environment
 

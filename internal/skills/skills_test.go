@@ -49,6 +49,9 @@ func TestReadMarkdownMatchesSourceAsset(t *testing.T) {
 	if !strings.Contains(content, "does not access the network, write files, or run command handlers") {
 		t.Fatal("SKILL.md must describe schema discovery side-effect boundaries")
 	}
+	if !strings.Contains(content, "compact by default") || !strings.Contains(content, "`--pretty`") {
+		t.Fatal("SKILL.md must describe compact JSON and explicit human pretty output")
+	}
 }
 
 func TestDefinitionAndAliases(t *testing.T) {
@@ -95,6 +98,8 @@ func TestEmbeddedCLIContractDescribesStaticSchemaDiscovery(t *testing.T) {
 		"does not read credentials",
 		"not native-tool registration",
 		"doctor --project . --format json",
+		"one compact JSON line",
+		"`--pretty`",
 	} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("cli-contract.md must contain %q", required)

@@ -120,6 +120,37 @@ func TestParseBooleanTriState(t *testing.T) {
 	}
 }
 
+func TestPrettyBooleanAndNonJSONCompatibility(t *testing.T) {
+	definition := definitionForTest(t, "search")
+	tests := []struct {
+		args        []string
+		want        bool
+		wantPresent bool
+	}{
+		{args: []string{"query"}, want: false, wantPresent: false},
+		{args: []string{"query", "--pretty"}, want: true, wantPresent: true},
+		{args: []string{"query", "--pretty=true"}, want: true, wantPresent: true},
+		{args: []string{"query", "--pretty=false"}, want: false, wantPresent: true},
+	}
+	for _, test := range tests {
+		parsed, err := parseCommand(definition, test.args)
+		if err != nil {
+			t.Fatalf("parseCommand(%v): %v", test.args, err)
+		}
+		if parsed.Bool("pretty") != test.want || parsed.Present["pretty"] != test.wantPresent {
+			t.Fatalf("parseCommand(%v) pretty=(%t,present=%t), want (%t,present=%t)", test.args, parsed.Bool("pretty"), parsed.Present["pretty"], test.want, test.wantPresent)
+		}
+	}
+
+	content, err := parseCommand(definitionForTest(t, "skills.show"), []string{"fast-context", "--format", "content", "--pretty"})
+	if err != nil || content.String("format") != "content" || !content.Bool("pretty") {
+		t.Fatalf("content/pretty parse values=%#v err=%v", content.Values, err)
+	}
+	if _, err := parseCommand(definitionForTest(t, "version"), []string{"--pretty"}); err == nil {
+		t.Fatal("version unexpectedly accepted --pretty")
+	}
+}
+
 func TestBuildSearchOptionsRespectsRuntimeAndExplicitOverrides(t *testing.T) {
 	definition := definitionForTest(t, "search")
 	runtimeDefaults := config.Runtime{
@@ -268,6 +299,7 @@ func TestCanonicalManifestBindingsRenderParseableArgv(t *testing.T) {
 		"exclude":          []string{"vendor", ""},
 		"format":           "json",
 		"include_snippets": false,
+		"pretty":           true,
 		"verbose":          true,
 	}
 	argv, err := renderCanonicalArgvForTest(manifest.ArgvConventions, manifest.Commands[0], input)
@@ -282,7 +314,7 @@ func TestCanonicalManifestBindingsRenderParseableArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rendered argv did not parse: %v: %v", argv, err)
 	}
-	if parsed.String("query") != "-leading query" || parsed.String("project") != "-fixture" || parsed.Duration("timeout_ms") != time.Second || parsed.Bool("include_snippets") || !parsed.Present["include_snippets"] || !reflect.DeepEqual(parsed.Strings("exclude"), []string{"vendor", ""}) {
+	if parsed.String("query") != "-leading query" || parsed.String("project") != "-fixture" || parsed.Duration("timeout_ms") != time.Second || parsed.Bool("include_snippets") || !parsed.Present["include_snippets"] || !parsed.Bool("pretty") || !reflect.DeepEqual(parsed.Strings("exclude"), []string{"vendor", ""}) {
 		t.Fatalf("rendered values changed: argv=%v parsed=%#v", argv, parsed.Values)
 	}
 }

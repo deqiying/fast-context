@@ -72,7 +72,22 @@ func TestSchemaCLIReportsStructuredArgumentErrors(t *testing.T) {
 		if envelope.OK || envelope.Error.Code != "INVALID_ARGUMENT" || envelope.Error.Message == "" || !reflect.DeepEqual(envelope.AvailablePaths, wantPaths) {
 			t.Fatalf("Execute(%v) returned unexpected error: %#v", args, envelope)
 		}
+		assertCompactJSONText(t, stdout)
 	}
+}
+
+func TestSchemaErrorFormattingRespectsParsedPretty(t *testing.T) {
+	code, pretty, stderr := executeForTest(t, "schema", "missing", "--pretty")
+	if code != 2 || stderr != "" {
+		t.Fatalf("pretty schema error code=%d stderr=%q", code, stderr)
+	}
+	assertPrettyJSONText(t, pretty)
+
+	code, compact, stderr := executeForTest(t, "schema", "--pretty", "--unknown")
+	if code != 2 || stderr != "" {
+		t.Fatalf("parse schema error code=%d stderr=%q", code, stderr)
+	}
+	assertCompactJSONText(t, compact)
 }
 
 func TestSchemaErrorsDoNotReflectUnknownInput(t *testing.T) {
@@ -103,6 +118,45 @@ func TestSchemaOutputIsDeterministicAndUsesRuntimeVersion(t *testing.T) {
 	}
 	if strings.Contains(first, "\\u003c") || !strings.HasSuffix(first, "\n") {
 		t.Fatalf("schema encoder contract changed: %q", first)
+	}
+	assertCompactJSONText(t, first)
+}
+
+func TestSchemaCompactAndPrettyAreSemanticallyEquivalent(t *testing.T) {
+	for _, target := range [][]string{nil, {"search"}} {
+		compactArgs := append([]string{"schema"}, target...)
+		prettyArgs := append(append([]string{}, compactArgs...), "--pretty")
+		explicitCompactArgs := append(append([]string{}, compactArgs...), "--pretty=false")
+
+		compactCode, compact, compactErr := executeForTest(t, compactArgs...)
+		prettyCode, pretty, prettyErr := executeForTest(t, prettyArgs...)
+		explicitCode, explicitCompact, explicitErr := executeForTest(t, explicitCompactArgs...)
+		if compactCode != 0 || prettyCode != 0 || explicitCode != 0 || compactErr != "" || prettyErr != "" || explicitErr != "" {
+			t.Fatalf("schema target=%v codes=(%d,%d,%d) stderr=(%q,%q,%q)", target, compactCode, prettyCode, explicitCode, compactErr, prettyErr, explicitErr)
+		}
+		assertCompactJSONText(t, compact)
+		assertPrettyJSONText(t, pretty)
+		assertJSONSemanticallyEqual(t, compact, pretty)
+		if explicitCompact != compact {
+			t.Fatalf("schema target=%v explicit compact differs", target)
+		}
+	}
+}
+
+func TestSchemaJSONEncoderKeepsHTMLUnescaped(t *testing.T) {
+	for _, pretty := range []bool{false, true} {
+		var buffer bytes.Buffer
+		if err := encodeSchemaJSON(&buffer, map[string]string{"html": "<tag>"}, pretty); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(buffer.String(), `\u003c`) || !strings.Contains(buffer.String(), "<tag>") {
+			t.Fatalf("schema HTML escaping changed: pretty=%t output=%q", pretty, buffer.String())
+		}
+		if pretty {
+			assertPrettyJSONText(t, buffer.String())
+		} else {
+			assertCompactJSONText(t, buffer.String())
+		}
 	}
 }
 
@@ -210,7 +264,7 @@ func TestSchemaMatchesFixedVersionGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buffer bytes.Buffer
-	if err := encodeSchemaJSON(&buffer, manifest); err != nil {
+	if err := encodeSchemaJSON(&buffer, manifest, true); err != nil {
 		t.Fatal(err)
 	}
 	goldenPath := filepath.Join("testdata", "cli-command-manifest-v1.golden.json")

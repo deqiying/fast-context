@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -23,11 +22,12 @@ type schemaErrorDetail struct {
 }
 
 func runSchema(registry *commandcontract.Registry, parsed ParsedCommand, stdout, stderr io.Writer) int {
+	pretty := parsed.Bool("pretty")
 	manifest, err := BuildManifest(registry, version.Version, parsed.Strings("command_path"))
 	if err != nil {
-		return writeSchemaArgumentError(registry, stdout, stderr, err.Error())
+		return writeSchemaArgumentError(registry, stdout, stderr, err.Error(), pretty)
 	}
-	if err := encodeSchemaJSON(stdout, manifest); err != nil {
+	if err := encodeSchemaJSON(stdout, manifest, pretty); err != nil {
 		fmt.Fprintf(stderr, "Error: failed to write schema: %s\n", err)
 		return 1
 	}
@@ -71,7 +71,7 @@ func BuildManifest(registry *commandcontract.Registry, cliVersion string, path [
 	}, nil
 }
 
-func writeSchemaArgumentError(registry *commandcontract.Registry, stdout, stderr io.Writer, message string) int {
+func writeSchemaArgumentError(registry *commandcontract.Registry, stdout, stderr io.Writer, message string, pretty bool) int {
 	message = sanitizeSchemaArgumentError(message)
 	envelope := schemaErrorEnvelope{
 		OK: false,
@@ -81,7 +81,7 @@ func writeSchemaArgumentError(registry *commandcontract.Registry, stdout, stderr
 		},
 		AvailablePaths: availableCanonicalPaths(registry),
 	}
-	if err := encodeSchemaJSON(stdout, envelope); err != nil {
+	if err := encodeSchemaJSON(stdout, envelope, pretty); err != nil {
 		fmt.Fprintf(stderr, "Error: failed to write schema error: %s\n", err)
 		return 1
 	}
@@ -110,9 +110,8 @@ func availableCanonicalPaths(registry *commandcontract.Registry) []string {
 	return paths
 }
 
-func encodeSchemaJSON(w io.Writer, value any) error {
-	encoder := json.NewEncoder(w)
+func encodeSchemaJSON(w io.Writer, value any, pretty bool) error {
+	encoder := newJSONEncoder(w, pretty)
 	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
 }

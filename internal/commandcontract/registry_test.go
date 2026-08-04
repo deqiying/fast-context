@@ -141,6 +141,55 @@ func TestDefinitionsProduceBoundInputSchemas(t *testing.T) {
 	}
 }
 
+func TestJSONCommandsExposePrettyPresentationOption(t *testing.T) {
+	registry := MustDefaultRegistry()
+	wantDefaults := map[string]string{
+		"search":      "text",
+		"key.extract": "text",
+		"doctor":      "text",
+		"skills.list": "text",
+		"skills.show": "content",
+		"schema":      "json",
+	}
+	for id, wantDefault := range wantDefaults {
+		definition, ok := registry.LookupID(id)
+		if !ok {
+			t.Fatalf("command %q is missing", id)
+		}
+		if definition.Output.DefaultFormat != wantDefault {
+			t.Fatalf("command %q default format=%q, want %q", id, definition.Output.DefaultFormat, wantDefault)
+		}
+		if len(definition.Options) == 0 {
+			t.Fatalf("command %q has no options", id)
+		}
+		pretty := definition.Options[len(definition.Options)-1]
+		defaultValue, defaultOK := pretty.Default.(bool)
+		if pretty.Name != "pretty" || pretty.Flag != "--pretty" || pretty.Type != TypeBoolean || !pretty.HasDefault || !defaultOK || defaultValue {
+			t.Fatalf("command %q pretty option=%#v", id, pretty)
+		}
+		for _, variant := range definition.Output.Variants {
+			if variant == "pretty" {
+				t.Fatalf("command %q exposes pretty as a payload variant", id)
+			}
+		}
+
+		properties := definition.InputSchema()["properties"].(map[string]any)
+		property, ok := properties["pretty"].(map[string]any)
+		if !ok || property["type"] != "boolean" || property["default"] != false {
+			t.Fatalf("command %q pretty schema=%#v", id, property)
+		}
+		binding := property["x-cli-binding"].(map[string]any)
+		if binding["kind"] != "flag" || binding["token"] != "--pretty" || binding["order"] != len(definition.Options)-1 {
+			t.Fatalf("command %q pretty binding=%#v", id, binding)
+		}
+	}
+
+	version, _ := registry.LookupID("version")
+	if len(version.Options) != 0 {
+		t.Fatalf("version unexpectedly exposes options: %#v", version.Options)
+	}
+}
+
 func TestRegistryReturnsDeepCopies(t *testing.T) {
 	registry := MustDefaultRegistry()
 	first, _ := registry.LookupID("search")

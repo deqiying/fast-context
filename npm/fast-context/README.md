@@ -35,6 +35,16 @@ fast-context search "where is authentication handled" --project . --format json
 
 `schema --format json` returns the full versioned CLI command manifest; `schema --format json <canonical-command-path...>` returns one definition, such as `search` or `key extract`. Prefer the targeted form when the command is known, and use the full form only for first-time discovery or caching. It accepts canonical paths only, is JSON-only and static, and does not read configuration, credentials, project/CWD, or environment values; it does not access the network, write files, or run normal command handlers. The manifest is not native-tool registration: a host must explicitly map it if native tools are required.
 
+## JSON presentation
+
+JSON output defaults to one compact line with one trailing LF. For human inspection, add `--pretty` to produce two-space-indented JSON with the same trailing LF:
+
+```sh
+fast-context schema --pretty
+```
+
+The CLI never infers layout from TTY, pipes, redirection, or its host. `--pretty` is accepted by `search`, `key extract`, `doctor`, `skills list`, `skills show`, and `schema`; it is ignored for text/content output and never selects JSON by itself. The existing default format of each command is unchanged, and text-only `version` does not support `--pretty`.
+
 ## Local credentials
 
 For a persistent user-level key, create `$HOME/.config/fast-context/config.json` yourself:

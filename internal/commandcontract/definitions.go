@@ -146,6 +146,7 @@ func searchDefinition() CommandDefinition {
 					"fallback":    false,
 				},
 			},
+			prettyOption(),
 		},
 		Availability: AvailabilityDefinition{
 			Dynamic:      true,
@@ -183,6 +184,7 @@ func keyExtractDefinition() CommandDefinition {
 				DefaultSource: map[string]any{"kind": "runtime_default_credential_source", "source": "linux_wsl_devin_cli_toml"},
 			},
 			formatOption("text", []string{"text", "json"}),
+			prettyOption(),
 		},
 		Availability: staticAvailability(),
 		SideEffects:  []string{"credential_source_read", "temporary_filesystem_write_when_sqlite"},
@@ -211,6 +213,7 @@ func doctorDefinition() CommandDefinition {
 				DefaultSource: map[string]any{"kind": "current_working_directory"},
 			},
 			formatOption("text", []string{"text", "json"}),
+			prettyOption(),
 		},
 		Availability: staticAvailability(),
 		SideEffects:  []string{"environment_read", "project_filesystem_read", "credential_source_read"},
@@ -231,6 +234,7 @@ func skillsListDefinition() CommandDefinition {
 		PathMatching: PathMatchingDefinition{CaseInsensitiveSegments: []int{1}},
 		Options: []OptionDefinition{
 			formatOptionNormalized("text", []string{"text", "json"}),
+			prettyOption(),
 		},
 		Availability: staticAvailability(),
 		SideEffects:  []string{},
@@ -254,6 +258,7 @@ func skillsShowDefinition() CommandDefinition {
 		},
 		Options: []OptionDefinition{
 			formatOptionNormalized("content", []string{"content", "json"}),
+			prettyOption(),
 		},
 		Availability: staticAvailability(),
 		SideEffects:  []string{"embedded_resource_read"},
@@ -300,6 +305,7 @@ func schemaDefinition() CommandDefinition {
 		},
 		Options: []OptionDefinition{
 			formatOption("json", []string{"json"}),
+			prettyOption(),
 		},
 		Availability: staticAvailability(),
 		SideEffects:  []string{},
@@ -351,6 +357,17 @@ func formatOptionNormalized(defaultValue string, values []string) OptionDefiniti
 	option := formatOption(defaultValue, values)
 	option.TrimSpaceThenLowercase = true
 	return option
+}
+
+func prettyOption() OptionDefinition {
+	return OptionDefinition{
+		Name:        "pretty",
+		Flag:        "--pretty",
+		Type:        TypeBoolean,
+		Description: "Indent JSON output; ignored for non-JSON formats.",
+		Default:     false,
+		HasDefault:  true,
+	}
 }
 
 func staticAvailability() AvailabilityDefinition {

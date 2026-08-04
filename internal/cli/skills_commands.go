@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -29,13 +28,14 @@ type skillShowOutput struct {
 
 func runParsedSkillsList(parsed ParsedCommand, stdout, _ io.Writer) int {
 	format := parsed.String("format")
+	pretty := parsed.Bool("pretty")
 	definitions := skills.Definitions()
 	items := make([]skillDefinitionOutput, 0, len(definitions))
 	for _, definition := range definitions {
 		items = append(items, skillDefinitionData(definition))
 	}
 	if format == "json" {
-		return encodeJSON(stdout, skillsListOutput{OK: true, Skills: items, Total: len(items)})
+		return encodeJSON(stdout, skillsListOutput{OK: true, Skills: items, Total: len(items)}, pretty)
 	}
 	for _, item := range items {
 		fmt.Fprintf(stdout, "%s\t%s\n", item.ID, item.Description)
@@ -46,6 +46,7 @@ func runParsedSkillsList(parsed ParsedCommand, stdout, _ io.Writer) int {
 func runParsedSkillsShow(parsed ParsedCommand, stdout, stderr io.Writer) int {
 	skillName := parsed.String("skill")
 	format := parsed.String("format")
+	pretty := parsed.Bool("pretty")
 	definition, err := skills.Describe(skillName)
 	if err != nil {
 		return usageError(stderr, err.Error())
@@ -63,7 +64,7 @@ func runParsedSkillsShow(parsed ParsedCommand, stdout, stderr io.Writer) int {
 		OK:      true,
 		Skill:   skillDefinitionData(definition),
 		Content: content,
-	})
+	}, pretty)
 }
 
 func skillDefinitionData(definition skills.Definition) skillDefinitionOutput {
@@ -78,9 +79,8 @@ func skillDefinitionData(definition skills.Definition) skillDefinitionOutput {
 // encodeJSON intentionally keeps encoding/json's default HTML escaping because
 // this is part of the existing skills JSON byte contract. Schema output has a
 // dedicated encoder and must not change this behavior.
-func encodeJSON(w io.Writer, value any) int {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
+func encodeJSON(w io.Writer, value any, pretty bool) int {
+	encoder := newJSONEncoder(w, pretty)
 	if err := encoder.Encode(value); err != nil {
 		return 1
 	}

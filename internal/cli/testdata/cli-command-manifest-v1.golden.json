@@ -157,6 +157,18 @@
               "false_semantics": "do_not_override_runtime_bootstrap_setting"
             }
           },
+          "pretty": {
+            "default": false,
+            "description": "Indent JSON output; ignored for non-JSON formats.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 12,
+              "token": "--pretty",
+              "true": "presence_flag"
+            }
+          },
           "project": {
             "description": "Project root.",
             "minLength": 1,
@@ -357,6 +369,18 @@
               "token": "--format"
             }
           },
+          "pretty": {
+            "default": false,
+            "description": "Indent JSON output; ignored for non-JSON formats.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 2,
+              "token": "--pretty",
+              "true": "presence_flag"
+            }
+          },
           "project": {
             "description": "Project root to inspect.",
             "minLength": 1,
@@ -446,6 +470,18 @@
               "kind": "runtime_default_credential_source",
               "source": "linux_wsl_devin_cli_toml"
             }
+          },
+          "pretty": {
+            "default": false,
+            "description": "Indent JSON output; ignored for non-JSON formats.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 2,
+              "token": "--pretty",
+              "true": "presence_flag"
+            }
           }
         },
         "type": "object"
@@ -522,6 +558,18 @@
               "order": 0,
               "token": "--format"
             }
+          },
+          "pretty": {
+            "default": false,
+            "description": "Indent JSON output; ignored for non-JSON formats.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 1,
+              "token": "--pretty",
+              "true": "presence_flag"
+            }
           }
         },
         "type": "object"
@@ -592,6 +640,18 @@
             },
             "x-cli-normalization": {
               "kind": "trim_space_then_lowercase"
+            }
+          },
+          "pretty": {
+            "default": false,
+            "description": "Indent JSON output; ignored for non-JSON formats.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 1,
+              "token": "--pretty",
+              "true": "presence_flag"
             }
           }
         },
@@ -664,6 +724,18 @@
             },
             "x-cli-normalization": {
               "kind": "trim_space_then_lowercase"
+            }
+          },
+          "pretty": {
+            "default": false,
+            "description": "Indent JSON output; ignored for non-JSON formats.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 1,
+              "token": "--pretty",
+              "true": "presence_flag"
             }
           },
           "skill": {

@@ -38,7 +38,7 @@ go run ./cmd/fast-context search "where is auth handled" --project . --tree-dept
 | `doctor` | Check project path, ripgrep, credentials, and build metadata. |
 | `skills list` | List embedded Agent Skills. |
 | `skills show <skill>` | Return the raw embedded `SKILL.md` or structured JSON. |
-| `schema [--format json] [<canonical-command-path>...]` | Return the versioned, machine-readable CLI command manifest in full or for one canonical command path. |
+| `schema [--format json] [--pretty] [<canonical-command-path>...]` | Return the versioned, machine-readable CLI command manifest in full or for one canonical command path. |
 | `version`, `--version`, `-v` | Print the same linker-injected build metadata. |
 
 Load the version-matched Agent Skill directly from the CLI:
@@ -62,6 +62,16 @@ fast-context schema --format json key extract
 ```
 
 Targets accept canonical paths only. Compatibility aliases remain executable, but callers should not generate them from the manifest. `schema` is JSON-only and static: it does not read runtime configuration, credentials, a project, the current directory, or environment values; it does not access the network, write files, or invoke `search`, `doctor`, `key extract`, or Skill-reading handlers. The manifest describes command input and coarse output/exit-code contracts; it does not register a native tool automatically. A host that needs native tool calling must explicitly consume and map the manifest.
+
+## JSON presentation
+
+When a command selects JSON, its default physical output is one compact JSON line followed by one LF. Pass `--pretty` only for human inspection to use two-space indentation and the same trailing LF; for example:
+
+```powershell
+fast-context schema --pretty
+```
+
+JSON layout is determined only by argv, never by TTY, pipes, redirection, or the host environment. `--pretty` is supported by `search`, `key extract`, `doctor`, `skills list`, `skills show`, and `schema`; it has no effect in their text/content modes and does not select JSON implicitly. Existing default formats remain unchanged, and text-only `version` does not accept `--pretty`.
 
 ## Search pipeline
 

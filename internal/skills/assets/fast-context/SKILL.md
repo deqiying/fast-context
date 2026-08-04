@@ -51,6 +51,8 @@ Use the full schema, `fast-context schema --format json`, only for first-time ge
 
 The manifest does not replace this Skill's decision boundary, `doctor` preflight, external-transmission rules, or local verification. In particular, `search` remains the external-service operation described above.
 
+JSON selected by these commands is compact by default: one JSON line with one trailing LF. Keep Agent and automation commands compact. For an interactive human review only, add `--pretty` for two-space indentation; it is supported by `search`, `key extract`, `doctor`, `skills list`, `skills show`, and `schema`. It does not select JSON or alter text/content output, and the CLI never switches layout based on TTY, pipes, redirection, or the host environment. `version` remains text-only and does not accept `--pretty`.
+
 ## Run the local preflight
 
 Run doctor against the intended project before search:

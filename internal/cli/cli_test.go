@@ -150,6 +150,20 @@ func TestRootAndSearchHelpCoverRegistryAndRuntimeContract(t *testing.T) {
 	}
 }
 
+func TestHelpExposesPrettyOnlyForJSONCommands(t *testing.T) {
+	for _, path := range [][]string{{"search"}, {"key", "extract"}, {"doctor"}, {"skills", "list"}, {"skills", "show"}, {"schema"}} {
+		args := append(append([]string{}, path...), "--help")
+		code, stdout, stderr := executeForTest(t, args...)
+		if code != 0 || stderr != "" || !strings.Contains(stdout, "--pretty[=true|false]") || !strings.Contains(stdout, "Indent JSON output; ignored for non-JSON formats.") {
+			t.Fatalf("help %v does not expose pretty contract: code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+	}
+	code, stdout, stderr := executeForTest(t, "version", "--help")
+	if code != 0 || stderr != "" || strings.Contains(stdout, "--pretty") {
+		t.Fatalf("version help unexpectedly exposes pretty: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestCommandBindingsCoverRegistryExactly(t *testing.T) {
 	if err := validateCommandBindings(defaultCommandRegistry, defaultCommandHandlers); err != nil {
 		t.Fatal(err)
@@ -239,6 +253,12 @@ func TestHelpTokenUsedAsFlagValueIsNotIntercepted(t *testing.T) {
 }
 
 func TestSkillsListAndShow(t *testing.T) {
+	textCode, textOutput, textErr := executeForTest(t, "skills", "list")
+	prettyTextCode, prettyTextOutput, prettyTextErr := executeForTest(t, "skills", "list", "--pretty")
+	if textCode != 0 || prettyTextCode != 0 || textErr != "" || prettyTextErr != "" || textOutput != prettyTextOutput {
+		t.Fatalf("skills text output changed with pretty: codes=(%d,%d) equal=%t stderr=(%q,%q)", textCode, prettyTextCode, textOutput == prettyTextOutput, textErr, prettyTextErr)
+	}
+
 	code, stdout, stderr := executeForTest(t, "skills", "list", "--format", "json")
 	if code != 0 || stderr != "" {
 		t.Fatalf("skills list code=%d stderr=%q", code, stderr)
@@ -249,6 +269,17 @@ func TestSkillsListAndShow(t *testing.T) {
 	}
 	if !list.OK || list.Total != 1 || len(list.Skills) != 1 || list.Skills[0].ID != "fast-context" {
 		t.Fatalf("unexpected skills list: %#v", list)
+	}
+	assertCompactJSONText(t, stdout)
+	prettyCode, prettyStdout, prettyStderr := executeForTest(t, "skills", "list", "--format", "json", "--pretty")
+	if prettyCode != 0 || prettyStderr != "" {
+		t.Fatalf("pretty skills list code=%d stderr=%q", prettyCode, prettyStderr)
+	}
+	assertPrettyJSONText(t, prettyStdout)
+	assertJSONSemanticallyEqual(t, stdout, prettyStdout)
+	explicitCompactCode, explicitCompact, explicitCompactErr := executeForTest(t, "skills", "list", "--format", "json", "--pretty=false")
+	if explicitCompactCode != 0 || explicitCompactErr != "" || explicitCompact != stdout {
+		t.Fatalf("explicit compact skills list code=%d equal=%t stderr=%q", explicitCompactCode, explicitCompact == stdout, explicitCompactErr)
 	}
 
 	code, stdout, stderr = executeForTest(t, "skills", "show", "code-context", "--format=content")
@@ -262,6 +293,10 @@ func TestSkillsListAndShow(t *testing.T) {
 	if stdout != want {
 		t.Fatal("skills show content differs from the embedded SKILL.md")
 	}
+	code, prettyContent, stderr := executeForTest(t, "skills", "show", "code-context", "--format=content", "--pretty")
+	if code != 0 || stderr != "" || prettyContent != want {
+		t.Fatalf("skills show pretty content code=%d equal=%t stderr=%q", code, prettyContent == want, stderr)
+	}
 
 	code, stdout, stderr = executeForTest(t, "skills", "show", "fast-context", "--format", "json")
 	if code != 0 || stderr != "" {
@@ -274,11 +309,21 @@ func TestSkillsListAndShow(t *testing.T) {
 	if !shown.OK || shown.Skill.ID != "fast-context" || shown.Content != want {
 		t.Fatalf("unexpected skills show JSON: %#v", shown)
 	}
+	assertCompactJSONText(t, stdout)
+	prettyShowCode, prettyShow, prettyShowErr := executeForTest(t, "skills", "show", "fast-context", "--format", "json", "--pretty")
+	if prettyShowCode != 0 || prettyShowErr != "" {
+		t.Fatalf("pretty skills show code=%d stderr=%q", prettyShowCode, prettyShowErr)
+	}
+	assertPrettyJSONText(t, prettyShow)
+	assertJSONSemanticallyEqual(t, stdout, prettyShow)
+	if !strings.Contains(prettyShow, `\u003c`) {
+		t.Fatal("pretty skills JSON no longer uses encoding/json HTML escaping")
+	}
 }
 
 func TestSkillsAliasesAndJSONEscapingRemainCompatible(t *testing.T) {
 	code, stdout, stderr := executeForTest(t, "skills", "LS", "--format", " JSON ")
-	if code != 0 || stderr != "" || !strings.Contains(stdout, `"ok": true`) {
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"ok":true`) {
 		t.Fatalf("skills LS code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	code, stdout, stderr = executeForTest(t, "skills", "GET", "fast-context", "--format", "json")
@@ -311,6 +356,13 @@ func TestDoctorJSONIncludesAutomationFields(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("doctor code=%d stderr=%q", code, stderr)
 	}
+	assertCompactJSONText(t, stdout)
+	prettyCode, prettyStdout, prettyStderr := executeForTest(t, "doctor", "--project", project, "--format", "json", "--pretty")
+	if prettyCode != 0 || prettyStderr != "" {
+		t.Fatalf("pretty doctor code=%d stderr=%q", prettyCode, prettyStderr)
+	}
+	assertPrettyJSONText(t, prettyStdout)
+	assertJSONSemanticallyEqual(t, stdout, prettyStdout)
 	var report struct {
 		OK      bool `json:"ok"`
 		Project struct {
@@ -351,6 +403,13 @@ func TestKeyExtractExplicitSQLite(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("key extract code=%d stderr=%q", code, stderr)
 	}
+	assertCompactJSONText(t, stdout)
+	prettyCode, prettyStdout, prettyStderr := executeForTest(t, "key", "extract", "--path", path, "--format", "json", "--pretty")
+	if prettyCode != 0 || prettyStderr != "" {
+		t.Fatalf("pretty key extract code=%d stderr=%q", prettyCode, prettyStderr)
+	}
+	assertPrettyJSONText(t, prettyStdout)
+	assertJSONSemanticallyEqual(t, stdout, prettyStdout)
 	var result struct {
 		OK         bool   `json:"ok"`
 		Source     string `json:"source"`
@@ -375,6 +434,51 @@ func TestKeyExtractMissingExplicitPath(t *testing.T) {
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "credential source not found") {
 		t.Fatalf("key extract code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+}
+
+func TestKeyExtractJSONErrorFormatting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.state.vscdb")
+	code, compact, stderr := executeForTest(t, "key", "extract", "--path", path, "--format", "json")
+	if code != 1 || stderr != "" {
+		t.Fatalf("compact key error code=%d stderr=%q", code, stderr)
+	}
+	prettyCode, pretty, prettyStderr := executeForTest(t, "key", "extract", "--path", path, "--format", "json", "--pretty")
+	if prettyCode != 1 || prettyStderr != "" {
+		t.Fatalf("pretty key error code=%d stderr=%q", prettyCode, prettyStderr)
+	}
+	assertCompactJSONText(t, compact)
+	assertPrettyJSONText(t, pretty)
+	assertJSONSemanticallyEqual(t, compact, pretty)
+}
+
+func TestSearchLocalCredentialErrorFormatting(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	rgPath := filepath.Join(t.TempDir(), "rg-test")
+	if err := os.WriteFile(rgPath, []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("FAST_CONTEXT_KEY", "")
+	t.Setenv("WINDSURF_API_KEY", "")
+	t.Setenv("FC_RG_PATH", rgPath)
+
+	compactArgs := []string{"search", "format fixture", "--project", project, "--format", "json", "--no-bootstrap"}
+	code, compact, stderr := executeForTest(t, compactArgs...)
+	if code != 1 || stderr != "" {
+		t.Fatalf("compact search error code=%d stderr=%q", code, stderr)
+	}
+	prettyArgs := append(append([]string{}, compactArgs...), "--pretty")
+	prettyCode, pretty, prettyStderr := executeForTest(t, prettyArgs...)
+	if prettyCode != 1 || prettyStderr != "" {
+		t.Fatalf("pretty search error code=%d stderr=%q", prettyCode, prettyStderr)
+	}
+	assertCompactJSONText(t, compact)
+	assertPrettyJSONText(t, pretty)
+	assertJSONSemanticallyEqual(t, compact, pretty)
 }
 
 func TestCommandsIgnoreLegacyStateDatabase(t *testing.T) {

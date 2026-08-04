@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -62,7 +61,7 @@ func executeWithRegistryAndHandlers(ctx context.Context, registry *commandcontra
 	parsed, err := parseCommand(route.Definition, tail)
 	if err != nil {
 		if route.Definition.ID == "schema" {
-			return writeSchemaArgumentError(registry, stdout, stderr, err.Error())
+			return writeSchemaArgumentError(registry, stdout, stderr, err.Error(), false)
 		}
 		return usageError(stderr, err.Error())
 	}
@@ -76,6 +75,7 @@ func executeWithRegistryAndHandlers(ctx context.Context, registry *commandcontra
 
 func runParsedSearch(ctx context.Context, parsed ParsedCommand, stdout, stderr io.Writer) int {
 	opts := buildSearchOptions(parsed, config.ReadRuntime(), cwd())
+	pretty := parsed.Bool("pretty")
 	if opts.Verbose {
 		opts.Progress = func(message string) {
 			fmt.Fprintln(stderr, message)
@@ -85,8 +85,7 @@ func runParsedSearch(ctx context.Context, parsed ParsedCommand, stdout, stderr i
 	client := windsurf.NewClient(nil)
 	result, err := search.RunPipeline(ctx, opts, client)
 	if opts.Format == "json" {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newJSONEncoder(stdout, pretty)
 		if err != nil {
 			_ = encoder.Encode(output.ErrorJSON(err, result))
 			return 1
@@ -155,10 +154,10 @@ func buildSearchOptions(parsed ParsedCommand, runtimeDefaults config.Runtime, wo
 func runParsedKeyExtract(parsed ParsedCommand, stdout, stderr io.Writer) int {
 	explicitPath := parsed.String("path")
 	format := parsed.String("format")
+	pretty := parsed.Bool("pretty")
 	info, err := credentials.Extract(explicitPath)
 	if format == "json" {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newJSONEncoder(stdout, pretty)
 		if err != nil {
 			_ = encoder.Encode(map[string]any{
 				"ok":          false,
@@ -200,6 +199,7 @@ func runParsedDoctor(parsed ParsedCommand, stdout, _ io.Writer) int {
 		project = parsed.String("project")
 	}
 	format := parsed.String("format")
+	pretty := parsed.Bool("pretty")
 	absProject, projectErr := filepath.Abs(project)
 	rgPath, rgSource, rgErr := executor.FindRipgrepWithSource()
 	keyInfo, keyErr := credentials.FindAPIKey()
@@ -233,8 +233,7 @@ func runParsedDoctor(parsed ParsedCommand, stdout, _ io.Writer) int {
 		},
 	}
 	if format == "json" {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newJSONEncoder(stdout, pretty)
 		_ = encoder.Encode(report)
 		return 0
 	}

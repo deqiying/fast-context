@@ -387,8 +387,8 @@ V1 规则：
 1. 不传 command path 时返回 7 个 public canonical commands，并包含 `schema` 自身。
 2. 传 command path 时只接受 canonical path；`schema skills ls`、`schema --version` 等 alias query 返回参数错误。
 3. full 与 targeted 使用同一 envelope；targeted 的 `commands` 长度固定为 1。
-4. `--format` 省略时默认为 `json`，显式值也只接受 `json`。
-5. 不接受 `--output`、`--quiet`、`--verbose` 或未知 flag。
+4. V1 中 `--format` 省略时默认为 `json`，显式值也只接受 `json`；后续 JSON presentation 合同新增可选 `--pretty`，省略时输出 compact JSON，显式时输出两空格缩进 JSON。它不改变 format，也不按 TTY、pipe 或重定向自动切换。
+5. V1 不接受 `--output`、`--quiet`、`--verbose` 或未知 flag；后续发布的 `--pretty` 是该禁止列表的唯一新增例外。
 6. 成功返回 0；参数/target/format 错误返回 2；stdout 编码或写入失败返回 1。
 7. Schema 命令的成功与参数错误均输出 JSON 到 stdout，stderr 只保留不可编码/不可写的本地错误。
 8. 输出不包含 timestamp、cwd、project path、credential source、环境变量值或随机字段。
@@ -939,14 +939,14 @@ BuildManifest(registry, "test", nil)
 
 当前 skills 的 package 级 `encodeJSON()` 使用 Go 默认 HTML escaping；`skills show --format json` 会把 Skill 内容中的 `<...>` 编码为 `\u003c...\u003e`。V1 必须保留这一既有字节行为，不移动或修改 skills encoder。
 
-`schema_commands.go` 使用专属 static encoder；不得顺手重写 search、doctor、key、skills 的现有 JSON payload。Schema encoder 要求：
+本节的“固定两空格缩进”是 command-schema V1 在当时实施时的历史实现记录，而不是后续 JSON presentation 合同。`schema_commands.go` 仍使用专属 static encoder，且不得顺手重写 search、doctor、key、skills 的现有 JSON payload；当前统一合同改为运行时默认 compact JSON、显式 `--pretty` 才使用两空格缩进。Schema encoder 继续要求：
 
-- indent 固定为两个空格；
 - `SetEscapeHTML(false)`；
 - typed struct + 稳定排序；
 - 单个 trailing newline；
 - 写入错误返回 1；
-- 不运行 search error hint 或 credential redaction pipeline。
+- 不运行 search error hint 或 credential redaction pipeline；
+- manifest golden 显式请求两空格 pretty rendering，以保持审阅可读性。
 
 Dispatcher 测试还应把 6 个 normal handler 替换为 panic/call-counter stub，再执行 schema full/target/help；任一 counter 非零即失败。配合 `BuildManifest(registry, cliVersion, path)` 只接收静态参数的函数签名，可证明 schema active path 没有进入 runtime handler，而不是只凭输出中“没有泄漏 marker”推断未读取。
 
@@ -1260,6 +1260,7 @@ internal/cli/testdata/cli-command-manifest-v1.golden.json
 - help 不调用 search、doctor、key extract 或 embedded Skill read；
 - 每个 public definition 恰好有一个 handler binding；namespace 没有 handler。
 - `skills show --format json` 保持当前 HTML escaping 字节行为，证明 schema 专属 encoder 没有改变既有输出。
+- Schema runtime default 输出 compact JSON；fixed-version golden 则显式使用两空格 pretty encoder，二者都保留一个 trailing newline。
 
 ### 13.4 Schema 单元测试
 

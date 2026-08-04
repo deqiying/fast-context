@@ -173,7 +173,7 @@ fast-context key extract
 fast-context doctor
 fast-context skills list
 fast-context skills show <skill>
-fast-context schema [--format json] [<canonical-command-path>...]
+fast-context schema [--format json] [--pretty] [<canonical-command-path>...]
 fast-context version
 ```
 
@@ -189,6 +189,7 @@ fast-context version
 | `--timeout` | `30s` | 单次 Windsurf stream timeout |
 | `--exclude` | 空 | 可重复传入；相对初始项目根解释并覆盖本地读取与最终结果 |
 | `--format` | `text` | `text` 或 `json` |
+| `--pretty` | `false` | 仅影响 JSON 的物理排版；省略时 compact，显式时两空格缩进，不改变 format |
 | `--verbose` | `false` | 打印进度和诊断 |
 
 #### CLI command manifest
@@ -196,6 +197,8 @@ fast-context version
 `fast-context schema --format json` 生成完整、版本化的 CLI command manifest；`fast-context schema --format json <canonical-command-path...>` 只返回一个与完整清单中深度一致的 command definition。target 只接受 canonical path；历史 alias 继续由执行路由兼容，但不用于 Agent 生成。
 
 Manifest 的 input schema 描述 canonical Agent 输入，另以 `x-cli-*` 扩展记录 argv binding、环境默认来源、normalization 和既有兼容语义。它只声明粗粒度 output contract，避免为现有 search result、doctor map 和 credential result 伪造不稳定的完整 output schema。`schema` 自身只支持 JSON。
+
+任一命令选择 JSON 时，运行时默认写入单行 compact JSON 和一个结尾 LF；`--pretty` 才请求两空格缩进和同样的结尾 LF。该 presentation 选择只由 argv 决定，不随 TTY、pipe、重定向或宿主环境变化。`search`、`key extract`、`doctor`、`skills list`、`skills show` 与 `schema` 支持该 flag；它在 text/content 模式无效果且不隐式选择 JSON，既有 default format 不变，text-only `version` 不支持该 flag。正常 JSON 保持 Go 默认 HTML escaping，schema 继续使用 `SetEscapeHTML(false)`；schema runtime 默认 compact，而其 golden 显式使用 pretty 以保留可审阅性。
 
 该路径是静态只读能力发现：不读取 runtime config、credentials、project/CWD 或环境变量值，不访问网络、不写文件，也不触发 `search`、`doctor`、`key extract` 或 embedded Skill handler。它不会把命令自动注册为宿主 native tool；需要 native tool calling 的宿主必须显式消费并映射 manifest。这个静态 manifest 也不替代 search 的外传授权、doctor preflight 或返回候选后的本地复核。
 
