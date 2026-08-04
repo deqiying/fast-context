@@ -377,7 +377,7 @@ jobs:
 
   binary-release:
     name: Publish GitHub Release
-    needs: [binary-build, npm-publish]
+    needs: binary-build
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
