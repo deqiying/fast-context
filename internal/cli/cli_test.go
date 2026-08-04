@@ -5,12 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/deqiying/fast-context/internal/commandcontract"
 	"github.com/deqiying/fast-context/internal/skills"
 )
 
@@ -82,6 +84,160 @@ func TestVersionAliasesMatch(t *testing.T) {
 	}
 }
 
+func TestCanonicalVersionIsStrictButGlobalAliasesRemainCompatible(t *testing.T) {
+	code, stdout, stderr := executeForTest(t, "version", "extra")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "unexpected positional argument") {
+		t.Fatalf("canonical version trailing arg code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, args := range [][]string{{"--version", "extra"}, {"-v", "extra"}} {
+		code, stdout, stderr = executeForTest(t, args...)
+		if code != 0 || stdout == "" || stderr != "" {
+			t.Fatalf("global version alias %v code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+	}
+}
+
+func TestRegistryBackedHelpIsStatic(t *testing.T) {
+	handlers := map[string]commandHandler{}
+	for id := range defaultCommandHandlers {
+		commandID := id
+		handlers[id] = func(context.Context, *commandcontract.Registry, ParsedCommand, io.Writer, io.Writer) int {
+			panic("handler called while serving help: " + commandID)
+		}
+	}
+	paths := [][]string{{"search"}, {"key", "extract"}, {"doctor"}, {"skills", "list"}, {"skills", "show"}, {"version"}, {"schema"}, {"skills", "LS"}, {"skills", "GET"}, {"--version"}, {"-v"}}
+	for _, path := range paths {
+		args := append(append([]string{}, path...), "--help")
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := executeWithRegistryAndHandlers(context.Background(), defaultCommandRegistry, handlers, args, &stdout, &stderr)
+		if code != 0 || stdout.Len() == 0 || stderr.Len() != 0 {
+			t.Fatalf("help %v code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+	}
+	for _, args := range [][]string{{}, {"--help"}, {"key"}, {"skills"}, {"skills", "help"}} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := executeWithRegistryAndHandlers(context.Background(), defaultCommandRegistry, handlers, args, &stdout, &stderr)
+		if code != 0 || stdout.Len() == 0 || stderr.Len() != 0 {
+			t.Fatalf("group help %v code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestRootAndSearchHelpCoverRegistryAndRuntimeContract(t *testing.T) {
+	code, root, stderr := executeForTest(t, "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("root help code=%d stderr=%q", code, stderr)
+	}
+	for _, definition := range defaultCommandRegistry.Commands() {
+		if !strings.Contains(root, strings.Join(definition.Path, " ")) {
+			t.Fatalf("root help omits %q", strings.Join(definition.Path, " "))
+		}
+	}
+	code, searchHelp, stderr := executeForTest(t, "search", "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("search help code=%d stderr=%q", code, stderr)
+	}
+	for _, identifier := range []string{"FC_BOOTSTRAP_TREE_DEPTH", "FC_HOTSPOT_TOP_K", "FC_RESULT_MAX_LINES", "FC_LINE_MAX_CHARS", "FC_RG_PATH", "FC_INSECURE_TLS", "FAST_CONTEXT_KEY", "WINDSURF_API_KEY"} {
+		if !strings.Contains(searchHelp, identifier) {
+			t.Fatalf("search help omits %s", identifier)
+		}
+	}
+	code, schemaHelp, stderr := executeForTest(t, "schema", "--help")
+	if code != 0 || stderr != "" || !strings.Contains(schemaHelp, "fast-context schema [flags] [command-path...]") {
+		t.Fatalf("schema help does not use canonical option ordering: code=%d help=%q stderr=%q", code, schemaHelp, stderr)
+	}
+}
+
+func TestCommandBindingsCoverRegistryExactly(t *testing.T) {
+	if err := validateCommandBindings(defaultCommandRegistry, defaultCommandHandlers); err != nil {
+		t.Fatal(err)
+	}
+	missing := make(map[string]commandHandler, len(defaultCommandHandlers)-1)
+	for id, handler := range defaultCommandHandlers {
+		if id != "schema" {
+			missing[id] = handler
+		}
+	}
+	if err := validateCommandBindings(defaultCommandRegistry, missing); err == nil {
+		t.Fatal("binding validation accepted a missing handler")
+	}
+}
+
+func TestInvalidArgumentsReturnBeforeHandlers(t *testing.T) {
+	handlers := map[string]commandHandler{}
+	for id := range defaultCommandHandlers {
+		commandID := id
+		handlers[id] = func(context.Context, *commandcontract.Registry, ParsedCommand, io.Writer, io.Writer) int {
+			panic("handler called for invalid argv: " + commandID)
+		}
+	}
+	tests := [][]string{
+		{"search", "--unknown"},
+		{"key", "extract", "extra"},
+		{"doctor", "extra"},
+		{"skills", "list", "extra"},
+		{"skills", "show"},
+		{"version", "extra"},
+		{"schema", "--format", "yaml"},
+	}
+	for _, args := range tests {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := executeWithRegistryAndHandlers(context.Background(), defaultCommandRegistry, handlers, args, &stdout, &stderr)
+		if code != 2 {
+			t.Fatalf("invalid argv %v code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestHelpTokenUsedAsFlagValueIsNotIntercepted(t *testing.T) {
+	definition := definitionForTest(t, "schema")
+	if hasCommandHelpToken(definition, []string{"--format", "--help"}) {
+		t.Fatal("--help used as --format value was intercepted as help")
+	}
+	code, stdout, stderr := executeForTest(t, "schema", "--format", "--help")
+	if code != 2 || stderr != "" {
+		t.Fatalf("schema value/help code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var envelope schemaErrorEnvelope
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil || envelope.Error.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("schema value/help returned invalid error envelope: %#v err=%v", envelope, err)
+	}
+
+	for _, test := range []struct {
+		id   string
+		args []string
+	}{
+		{id: "search", args: []string{"query", "--project", "--help"}},
+		{id: "key.extract", args: []string{"--path", "--help"}},
+		{id: "doctor", args: []string{"--project", "--help"}},
+		{id: "skills.list", args: []string{"--format", "--help"}},
+	} {
+		if hasCommandHelpToken(definitionForTest(t, test.id), test.args) {
+			t.Fatalf("%s intercepted --help used as a flag value", test.id)
+		}
+	}
+	if !hasCommandHelpToken(definitionForTest(t, "search"), []string{"query", "--verbose", "--help"}) {
+		t.Fatal("help after a boolean presence flag was not recognized")
+	}
+
+	code, stdout, stderr = executeForTest(t, "skills", "typo", "--help")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "unknown skills command: typo") {
+		t.Fatalf("unknown namespace command was swallowed by help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, args := range [][]string{{"schema", "--unknown", "--help"}, {"schema", "--format", "yaml", "--help"}} {
+		code, stdout, stderr = executeForTest(t, args...)
+		if code != 2 || stderr != "" {
+			t.Fatalf("invalid option before help %v code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+	}
+	if hasCommandHelpToken(definitionForTest(t, "search"), []string{"query", "--max-turns", "invalid", "--help"}) {
+		t.Fatal("invalid option value before --help was swallowed")
+	}
+}
+
 func TestSkillsListAndShow(t *testing.T) {
 	code, stdout, stderr := executeForTest(t, "skills", "list", "--format", "json")
 	if code != 0 || stderr != "" {
@@ -117,6 +273,20 @@ func TestSkillsListAndShow(t *testing.T) {
 	}
 	if !shown.OK || shown.Skill.ID != "fast-context" || shown.Content != want {
 		t.Fatalf("unexpected skills show JSON: %#v", shown)
+	}
+}
+
+func TestSkillsAliasesAndJSONEscapingRemainCompatible(t *testing.T) {
+	code, stdout, stderr := executeForTest(t, "skills", "LS", "--format", " JSON ")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"ok": true`) {
+		t.Fatalf("skills LS code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = executeForTest(t, "skills", "GET", "fast-context", "--format", "json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("skills GET code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, `\u003c`) {
+		t.Fatal("skills JSON no longer uses encoding/json HTML escaping")
 	}
 }
 

@@ -340,6 +340,30 @@ try {
             throw "Launcher did not preserve Go exit code 2; got $LASTEXITCODE"
         }
 
+        $schemaText = (Get-CheckedOutput -FilePath $commandPath -Arguments @("schema", "--format", "json", "search")) -join "`n"
+        $schema = $schemaText | ConvertFrom-Json
+        if ($schema.kind -ne "fast_context_cli_command_manifest") {
+            throw "Installed launcher schema has unexpected kind: $schemaText"
+        }
+        if ($schema.manifest_version -ne 1) {
+            throw "Installed launcher schema has unexpected manifest version: $schemaText"
+        }
+        if ($schema.cli.version -ne $version) {
+            throw "Installed launcher schema version $($schema.cli.version) does not match $version"
+        }
+        $schemaScopePath = @($schema.scope.path)
+        if ($schema.scope.mode -ne "command" -or $schemaScopePath.Count -ne 1 -or $schemaScopePath[0] -ne "search") {
+            throw "Installed launcher schema has unexpected scope: $schemaText"
+        }
+        $schemaCommands = @($schema.commands)
+        if ($schemaCommands.Count -ne 1 -or $schemaCommands[0].id -ne "search") {
+            throw "Installed launcher schema must contain exactly one search command: $schemaText"
+        }
+        $searchCommandPath = @($schemaCommands[0].path)
+        if ($searchCommandPath.Count -ne 1 -or $searchCommandPath[0] -ne "search") {
+            throw "Installed launcher schema search command has unexpected canonical path: $schemaText"
+        }
+
         $env:FC_RG_PATH = $null
         $env:WINDSURF_API_KEY = "fixture-api-key-123456"
         $doctorText = (Get-CheckedOutput -FilePath $commandPath -Arguments @("doctor", "--project", $repoRoot, "--format", "json")) -join "`n"

@@ -14,6 +14,17 @@ const (
 	DefaultMaxResults  = 10
 	DefaultTimeout     = 30 * time.Second
 
+	MinTreeDepth      = 0
+	MaxTreeDepth      = 6
+	MinSearchTurns    = 1
+	MaxSearchTurns    = 5
+	MinSearchCommands = 1
+	MaxSearchCommands = 20
+	MinSearchResults  = 1
+	MaxSearchResults  = 30
+	MinTimeout        = time.Second
+	MaxTimeout        = 300 * time.Second
+
 	DefaultRepoMapMode         = "bootstrap_hotspot"
 	DefaultBootstrapTreeDepth  = 1
 	DefaultHotspotTopK         = 4
@@ -21,6 +32,20 @@ const (
 	DefaultHotspotMaxBytes     = 120 * 1024
 	DefaultBootstrapMaxTurns   = 2
 	DefaultBootstrapMaxCommand = 6
+
+	EnvMaxTurns             = "FC_MAX_TURNS"
+	EnvMaxCommands          = "FC_MAX_COMMANDS"
+	EnvTimeoutMS            = "FC_TIMEOUT_MS"
+	EnvRepoMapMode          = "FC_REPO_MAP_MODE"
+	EnvBootstrapEnabled     = "FC_BOOTSTRAP_ENABLED"
+	EnvBootstrapTreeDepth   = "FC_BOOTSTRAP_TREE_DEPTH"
+	EnvBootstrapMaxTurns    = "FC_BOOTSTRAP_MAX_TURNS"
+	EnvBootstrapMaxCommands = "FC_BOOTSTRAP_MAX_COMMANDS"
+	EnvHotspotTopK          = "FC_HOTSPOT_TOP_K"
+	EnvHotspotTreeDepth     = "FC_HOTSPOT_TREE_DEPTH"
+	EnvHotspotMaxBytes      = "FC_HOTSPOT_MAX_BYTES"
+	EnvIncludeSnippets      = "FC_INCLUDE_SNIPPETS"
+	EnvDebug                = "FAST_CONTEXT_DEBUG"
 )
 
 // DefaultExcludePaths mirrors upstream 1.5.2 DEFAULT_EXCLUDE_PATHS: directories
@@ -101,23 +126,23 @@ type Runtime struct {
 // defaults.
 func ReadRuntime() Runtime {
 	mode := DefaultRepoMapMode
-	if os.Getenv("FC_REPO_MAP_MODE") == "classic" {
+	if os.Getenv(EnvRepoMapMode) == "classic" {
 		mode = "classic"
 	}
 	return Runtime{
-		MaxTurns:             ReadIntEnv("FC_MAX_TURNS", DefaultMaxTurns, 1, 5),
-		MaxCommands:          ReadIntEnv("FC_MAX_COMMANDS", DefaultMaxCommands, 1, 20),
-		Timeout:              time.Duration(ReadIntEnv("FC_TIMEOUT_MS", int(DefaultTimeout/time.Millisecond), 1000, 300000)) * time.Millisecond,
+		MaxTurns:             ReadIntEnv(EnvMaxTurns, DefaultMaxTurns, MinSearchTurns, MaxSearchTurns),
+		MaxCommands:          ReadIntEnv(EnvMaxCommands, DefaultMaxCommands, MinSearchCommands, MaxSearchCommands),
+		Timeout:              time.Duration(ReadIntEnv(EnvTimeoutMS, int(DefaultTimeout/time.Millisecond), int(MinTimeout/time.Millisecond), int(MaxTimeout/time.Millisecond))) * time.Millisecond,
 		RepoMapMode:          mode,
-		BootstrapTreeDepth:   ReadIntEnv("FC_BOOTSTRAP_TREE_DEPTH", DefaultBootstrapTreeDepth, 1, 3),
-		HotspotTopK:          ReadIntEnv("FC_HOTSPOT_TOP_K", DefaultHotspotTopK, 0, 8),
-		HotspotTreeDepth:     ReadIntEnv("FC_HOTSPOT_TREE_DEPTH", DefaultHotspotTreeDepth, 1, 4),
-		HotspotMaxBytes:      ReadIntEnv("FC_HOTSPOT_MAX_BYTES", DefaultHotspotMaxBytes, 16*1024, 256*1024),
-		BootstrapEnabled:     ReadBoolEnv("FC_BOOTSTRAP_ENABLED", true),
-		BootstrapMaxTurns:    ReadIntEnv("FC_BOOTSTRAP_MAX_TURNS", DefaultBootstrapMaxTurns, 1, 3),
-		BootstrapMaxCommands: ReadIntEnv("FC_BOOTSTRAP_MAX_COMMANDS", DefaultBootstrapMaxCommand, 1, 8),
-		IncludeSnippets:      ReadBoolEnv("FC_INCLUDE_SNIPPETS", false),
-		Debug:                os.Getenv("FAST_CONTEXT_DEBUG") == "1" || os.Getenv("FAST_CONTEXT_DEBUG") == "true",
+		BootstrapTreeDepth:   ReadIntEnv(EnvBootstrapTreeDepth, DefaultBootstrapTreeDepth, 1, 3),
+		HotspotTopK:          ReadIntEnv(EnvHotspotTopK, DefaultHotspotTopK, 0, 8),
+		HotspotTreeDepth:     ReadIntEnv(EnvHotspotTreeDepth, DefaultHotspotTreeDepth, 1, 4),
+		HotspotMaxBytes:      ReadIntEnv(EnvHotspotMaxBytes, DefaultHotspotMaxBytes, 16*1024, 256*1024),
+		BootstrapEnabled:     ReadBoolEnv(EnvBootstrapEnabled, true),
+		BootstrapMaxTurns:    ReadIntEnv(EnvBootstrapMaxTurns, DefaultBootstrapMaxTurns, 1, 3),
+		BootstrapMaxCommands: ReadIntEnv(EnvBootstrapMaxCommands, DefaultBootstrapMaxCommand, 1, 8),
+		IncludeSnippets:      ReadBoolEnv(EnvIncludeSnippets, false),
+		Debug:                os.Getenv(EnvDebug) == "1" || os.Getenv(EnvDebug) == "true",
 	}
 }
 

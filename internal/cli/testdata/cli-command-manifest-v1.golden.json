@@ -1,0 +1,760 @@
+{
+  "ok": true,
+  "kind": "fast_context_cli_command_manifest",
+  "manifest_version": 1,
+  "cli": {
+    "name": "fast-context",
+    "version": "test"
+  },
+  "scope": {
+    "mode": "all",
+    "path": []
+  },
+  "argv_conventions": {
+    "ordering": [
+      "command_path",
+      "options",
+      "end_of_options_when_needed",
+      "positionals"
+    ],
+    "scalar_flag_value": "separate_token",
+    "leading_dash_or_empty_flag_value": "inline_equals",
+    "repeatable_array": "repeat_flag_in_input_order",
+    "environment_boolean_false": "explicit_equals"
+  },
+  "commands": [
+    {
+      "id": "search",
+      "path": [
+        "search"
+      ],
+      "category": "workflow",
+      "summary": "Find relevant local code through bounded semantic search.",
+      "aliases": [],
+      "capabilities": [
+        "code_context",
+        "semantic_code_search"
+      ],
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "exclude": {
+            "description": "Additional path exclusion; repeat the flag to preserve input order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 6,
+              "repeatable": true,
+              "token": "--exclude"
+            }
+          },
+          "format": {
+            "default": "text",
+            "description": "Output format.",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 7,
+              "token": "--format"
+            }
+          },
+          "include_snippets": {
+            "description": "Attach bounded snippets to results.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "absent": "inherit_runtime",
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 8,
+              "token": "--include-snippets",
+              "true": "presence_flag"
+            },
+            "x-cli-default-source": {
+              "environment": "FC_INCLUDE_SNIPPETS",
+              "fallback": false,
+              "kind": "environment_or_fallback"
+            }
+          },
+          "max_commands": {
+            "description": "Restricted local commands per round.",
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 3,
+              "token": "--max-commands"
+            },
+            "x-cli-default-source": {
+              "environment": "FC_MAX_COMMANDS",
+              "fallback": 8,
+              "kind": "environment_or_fallback"
+            },
+            "x-cli-normalization": {
+              "kind": "clamp",
+              "maximum": 20,
+              "minimum": 1
+            }
+          },
+          "max_results": {
+            "default": 10,
+            "description": "Maximum result files.",
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 4,
+              "token": "--max-results"
+            },
+            "x-cli-normalization": {
+              "kind": "clamp",
+              "maximum": 30,
+              "minimum": 1
+            }
+          },
+          "max_turns": {
+            "description": "Search rounds.",
+            "maximum": 5,
+            "minimum": 1,
+            "type": "integer",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 2,
+              "token": "--max-turns"
+            },
+            "x-cli-default-source": {
+              "environment": "FC_MAX_TURNS",
+              "fallback": 3,
+              "kind": "environment_or_fallback"
+            },
+            "x-cli-normalization": {
+              "kind": "clamp",
+              "maximum": 5,
+              "minimum": 1
+            }
+          },
+          "no_bootstrap": {
+            "default": false,
+            "description": "Disable the bootstrap keyword and hotspot pre-pass for this invocation.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 10,
+              "token": "--no-bootstrap",
+              "true": "presence_flag"
+            },
+            "x-cli-compatibility": {
+              "false_semantics": "do_not_override_runtime_bootstrap_setting"
+            }
+          },
+          "project": {
+            "description": "Project root.",
+            "minLength": 1,
+            "type": "string",
+            "x-cli-binding": {
+              "aliases": [
+                "-p"
+              ],
+              "kind": "flag",
+              "order": 0,
+              "token": "--project"
+            },
+            "x-cli-default-source": {
+              "kind": "current_working_directory"
+            }
+          },
+          "query": {
+            "description": "Natural-language code search query.",
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string",
+            "x-cli-binding": {
+              "end_of_options": "when_value_starts_with_dash",
+              "index": 0,
+              "kind": "positional"
+            },
+            "x-cli-compatibility": {
+              "additional_positionals": "join_with_single_space"
+            }
+          },
+          "repo_map_mode": {
+            "description": "Repository map strategy.",
+            "enum": [
+              "classic",
+              "bootstrap_hotspot"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 9,
+              "token": "--repo-map-mode"
+            },
+            "x-cli-default-source": {
+              "environment": "FC_REPO_MAP_MODE",
+              "fallback": "bootstrap_hotspot",
+              "kind": "environment_or_fallback"
+            }
+          },
+          "timeout_ms": {
+            "description": "Stream timeout in canonical integer milliseconds.",
+            "maximum": 300000,
+            "minimum": 1000,
+            "type": "integer",
+            "x-cli-binding": {
+              "argv_decoder": "go_duration_or_integer_milliseconds",
+              "kind": "flag",
+              "order": 5,
+              "parsed_value": "time.Duration",
+              "serialize": "base10_milliseconds",
+              "token": "--timeout"
+            },
+            "x-cli-compatibility": {
+              "accepted_argv_syntax": [
+                "go_duration",
+                "milliseconds"
+              ],
+              "explicit_flag_range": "any_parseable_duration"
+            },
+            "x-cli-default-source": {
+              "environment": "FC_TIMEOUT_MS",
+              "environment_normalization": {
+                "kind": "clamp",
+                "maximum": 300000,
+                "minimum": 1000
+              },
+              "fallback": 30000,
+              "kind": "environment_or_fallback"
+            }
+          },
+          "tree_depth": {
+            "default": 3,
+            "description": "Repository map depth; zero selects size-based auto depth in classic mode.",
+            "maximum": 6,
+            "minimum": 0,
+            "type": "integer",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 1,
+              "token": "--tree-depth"
+            },
+            "x-cli-normalization": {
+              "kind": "clamp",
+              "maximum": 6,
+              "minimum": 0
+            }
+          },
+          "verbose": {
+            "description": "Print progress to stderr.",
+            "type": "boolean",
+            "x-cli-binding": {
+              "absent": "inherit_runtime",
+              "false": "explicit_boolean_value",
+              "kind": "flag",
+              "order": 11,
+              "token": "--verbose",
+              "true": "presence_flag"
+            },
+            "x-cli-default-source": {
+              "environment": "FAST_CONTEXT_DEBUG",
+              "fallback": false,
+              "kind": "environment_or_fallback"
+            }
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": true,
+        "check_command": [
+          "doctor"
+        ],
+        "input_bindings": [
+          {
+            "target": "project",
+            "source": "project",
+            "omit_when_absent": true
+          },
+          {
+            "target": "format",
+            "constant": "json"
+          }
+        ],
+        "json_pointer": "/ok",
+        "preflight_level": "local_environment",
+        "does_not_prove": [
+          "credential_validity",
+          "network_reachability",
+          "remote_service_acceptance",
+          "search_result_quality"
+        ]
+      },
+      "side_effects": [
+        "credential_source_read",
+        "external_network",
+        "project_filesystem_read",
+        "repository_context_transmission"
+      ],
+      "output": {
+        "default_format": "text",
+        "formats": [
+          "json",
+          "text"
+        ],
+        "contract": "search_result",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "completed"
+          },
+          {
+            "code": 1,
+            "meaning": "runtime_failure"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    },
+    {
+      "id": "doctor",
+      "path": [
+        "doctor"
+      ],
+      "category": "utility",
+      "summary": "Inspect local project, ripgrep, credential, and build readiness.",
+      "aliases": [],
+      "capabilities": [],
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "default": "text",
+            "description": "Output format.",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 1,
+              "token": "--format"
+            }
+          },
+          "project": {
+            "description": "Project root to inspect.",
+            "minLength": 1,
+            "type": "string",
+            "x-cli-binding": {
+              "aliases": [
+                "-p"
+              ],
+              "kind": "flag",
+              "order": 0,
+              "token": "--project"
+            },
+            "x-cli-default-source": {
+              "kind": "current_working_directory"
+            }
+          }
+        },
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": false,
+        "preflight_level": "static"
+      },
+      "side_effects": [
+        "credential_source_read",
+        "environment_read",
+        "project_filesystem_read"
+      ],
+      "output": {
+        "default_format": "text",
+        "formats": [
+          "json",
+          "text"
+        ],
+        "contract": "doctor_report",
+        "redaction": "credential_material_redacted",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "completed_check_json_ok_may_be_false"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    },
+    {
+      "id": "key.extract",
+      "path": [
+        "key",
+        "extract"
+      ],
+      "category": "utility",
+      "summary": "Inspect an explicitly selected credential source or the default Devin CLI TOML.",
+      "aliases": [],
+      "capabilities": [],
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "default": "text",
+            "description": "Output format.",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 1,
+              "token": "--format"
+            }
+          },
+          "path": {
+            "description": "Specific TOML or state.vscdb credential source.",
+            "minLength": 1,
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 0,
+              "token": "--path"
+            },
+            "x-cli-default-source": {
+              "kind": "runtime_default_credential_source",
+              "source": "linux_wsl_devin_cli_toml"
+            }
+          }
+        },
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": false,
+        "preflight_level": "static"
+      },
+      "side_effects": [
+        "credential_source_read",
+        "temporary_filesystem_write_when_sqlite"
+      ],
+      "output": {
+        "default_format": "text",
+        "formats": [
+          "json",
+          "text"
+        ],
+        "contract": "credential_extract_result",
+        "redaction": "api_key_redacted",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "completed"
+          },
+          {
+            "code": 1,
+            "meaning": "credential_source_failure"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    },
+    {
+      "id": "schema",
+      "path": [
+        "schema"
+      ],
+      "category": "utility",
+      "summary": "Describe public CLI commands for Agents and automation adapters.",
+      "aliases": [],
+      "capabilities": [],
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "command_path": {
+            "description": "Optional canonical command path to describe.",
+            "items": {
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "type": "string"
+            },
+            "type": "array",
+            "x-cli-binding": {
+              "index": 0,
+              "kind": "positional",
+              "lookup": "canonical_only",
+              "variadic": true
+            }
+          },
+          "format": {
+            "default": "json",
+            "description": "Output format.",
+            "enum": [
+              "json"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 0,
+              "token": "--format"
+            }
+          }
+        },
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": false,
+        "preflight_level": "static"
+      },
+      "side_effects": [],
+      "output": {
+        "default_format": "json",
+        "formats": [
+          "json"
+        ],
+        "contract": "command_manifest",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "completed"
+          },
+          {
+            "code": 1,
+            "meaning": "local_output_failure"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    },
+    {
+      "id": "skills.list",
+      "path": [
+        "skills",
+        "list"
+      ],
+      "category": "utility",
+      "summary": "List Agent Skills embedded in this binary.",
+      "aliases": [
+        [
+          "skills",
+          "ls"
+        ]
+      ],
+      "capabilities": [],
+      "path_matching": {
+        "case_insensitive_segments": [
+          1
+        ]
+      },
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "default": "text",
+            "description": "Output format.",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 0,
+              "token": "--format"
+            },
+            "x-cli-normalization": {
+              "kind": "trim_space_then_lowercase"
+            }
+          }
+        },
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": false,
+        "preflight_level": "static"
+      },
+      "side_effects": [],
+      "output": {
+        "default_format": "text",
+        "formats": [
+          "json",
+          "text"
+        ],
+        "contract": "embedded_skill_list",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "completed"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    },
+    {
+      "id": "skills.show",
+      "path": [
+        "skills",
+        "show"
+      ],
+      "category": "utility",
+      "summary": "Read one Agent Skill embedded in this binary.",
+      "aliases": [
+        [
+          "skills",
+          "get"
+        ],
+        [
+          "skills",
+          "read"
+        ]
+      ],
+      "capabilities": [],
+      "path_matching": {
+        "case_insensitive_segments": [
+          1
+        ]
+      },
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "default": "content",
+            "description": "Output format.",
+            "enum": [
+              "content",
+              "json"
+            ],
+            "type": "string",
+            "x-cli-binding": {
+              "kind": "flag",
+              "order": 0,
+              "token": "--format"
+            },
+            "x-cli-normalization": {
+              "kind": "trim_space_then_lowercase"
+            }
+          },
+          "skill": {
+            "description": "Skill ID or alias.",
+            "minLength": 1,
+            "type": "string",
+            "x-cli-binding": {
+              "index": 0,
+              "kind": "positional"
+            }
+          }
+        },
+        "required": [
+          "skill"
+        ],
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": false,
+        "preflight_level": "static"
+      },
+      "side_effects": [
+        "embedded_resource_read"
+      ],
+      "output": {
+        "default_format": "content",
+        "formats": [
+          "content",
+          "json"
+        ],
+        "contract": "embedded_skill_content",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "completed"
+          },
+          {
+            "code": 1,
+            "meaning": "embedded_resource_failure"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    },
+    {
+      "id": "version",
+      "path": [
+        "version"
+      ],
+      "category": "utility",
+      "summary": "Print linker-injected CLI version metadata.",
+      "aliases": [
+        [
+          "--version"
+        ],
+        [
+          "-v"
+        ]
+      ],
+      "capabilities": [],
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": false,
+        "preflight_level": "static"
+      },
+      "side_effects": [],
+      "output": {
+        "default_format": "text",
+        "formats": [
+          "text"
+        ],
+        "contract": "version_line",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "completed"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    }
+  ]
+}

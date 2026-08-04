@@ -76,7 +76,10 @@ MVP 必须保持的功能：
 
 ```mermaid
 flowchart TD
-    A["CLI command"] --> B["Config and credential loader"]
+    A["CLI command"] --> R["CLI dispatch / command contract registry"]
+    R --> M["Static CLI command manifest"]
+    M --> N["Versioned JSON manifest"]
+    R --> B["Config and credential loader"]
     B --> C["Repo map builder"]
     C --> D["Search orchestrator"]
     D --> E["Windsurf client"]
@@ -93,6 +96,7 @@ flowchart TD
 ```text
 cmd/fast-context/main.go
 internal/cli/
+internal/commandcontract/
 internal/config/
 internal/credentials/
 internal/repomap/
@@ -111,7 +115,8 @@ internal/version/
 
 | 模块 | 职责 |
 | --- | --- |
-| `internal/cli` | 参数解析、子命令、退出码、用户可读错误 |
+| `internal/cli` | 基于 command contract 的分派、参数解析、子命令、退出码、用户可读错误；`schema` 在运行时解析前静态返回 |
+| `internal/commandcontract` | 公共 canonical path、兼容 alias、参数、argv binding、help 与 manifest 的单一事实源；`internal/cli` 负责验证 definition 与 handler binding 一一对应 |
 | `internal/config` | 读取 `FC_*` env 和 flag 默认值，并严格解析用户级 JSON 配置 |
 | `internal/credentials` | 按优先级解析 `FAST_CONTEXT_KEY`、本地 JSON、`WINDSURF_API_KEY` 和 Linux/WSL Devin CLI TOML；仅在显式 `--path` 时读取 `state.vscdb` |
 | `internal/repomap` | 生成 `/codebase` 虚拟树，自动 depth fallback |
@@ -146,14 +151,29 @@ internal/version/
 
 ### 6.1 CLI 层
 
-建议使用 `spf13/cobra` 或标准库 `flag`。如果只做 3 个子命令，标准库也足够；如果后续要加 `mcp serve`、completion、config 子命令，建议直接用 `cobra`。
+CLI 以 typed command contract registry 作为 routing、parser、help 与 manifest 的单一事实源。`schema` 必须在 runtime defaults、config、credentials、project filesystem 和网络调用之前分派，以确保能力发现不依赖本机状态。现有 CLI 保持标准库实现；不因 manifest 引入新的 parser 框架或依赖。
 
-建议命令：
+顶层分派顺序固定为：
+
+```text
+--version / -v
+  -> root / namespace / leaf help
+  -> canonical / compatibility-alias route
+  -> typed argv parse and validation
+  -> static schema execution
+  -> command ID to handler binding
+  -> runtime defaults / config / credentials / filesystem / network
+```
+
+公共 executable commands：
 
 ```text
 fast-context search <query>
 fast-context key extract
 fast-context doctor
+fast-context skills list
+fast-context skills show <skill>
+fast-context schema [--format json] [<canonical-command-path>...]
 fast-context version
 ```
 
@@ -170,6 +190,16 @@ fast-context version
 | `--exclude` | 空 | 可重复传入；相对初始项目根解释并覆盖本地读取与最终结果 |
 | `--format` | `text` | `text` 或 `json` |
 | `--verbose` | `false` | 打印进度和诊断 |
+
+#### CLI command manifest
+
+`fast-context schema --format json` 生成完整、版本化的 CLI command manifest；`fast-context schema --format json <canonical-command-path...>` 只返回一个与完整清单中深度一致的 command definition。target 只接受 canonical path；历史 alias 继续由执行路由兼容，但不用于 Agent 生成。
+
+Manifest 的 input schema 描述 canonical Agent 输入，另以 `x-cli-*` 扩展记录 argv binding、环境默认来源、normalization 和既有兼容语义。它只声明粗粒度 output contract，避免为现有 search result、doctor map 和 credential result 伪造不稳定的完整 output schema。`schema` 自身只支持 JSON。
+
+该路径是静态只读能力发现：不读取 runtime config、credentials、project/CWD 或环境变量值，不访问网络、不写文件，也不触发 `search`、`doctor`、`key extract` 或 embedded Skill handler。它不会把命令自动注册为宿主 native tool；需要 native tool calling 的宿主必须显式消费并映射 manifest。这个静态 manifest 也不替代 search 的外传授权、doctor preflight 或返回候选后的本地复核。
+
+`--timeout` 的 canonical Agent 输入范围为 `1s..300s`。`FC_TIMEOUT_MS` 作为环境运行时默认在此范围内 clamp；显式 `--timeout` 保持既有 duration parser 兼容行为，不因 manifest 被 clamp 或收紧。
 
 ### 6.2 Protobuf 与 Connect-RPC
 

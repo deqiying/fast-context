@@ -4,10 +4,11 @@
 
 1. Installation and ownership
 2. Commands
-3. Search flags and environment
-4. Structured output
-5. Exit codes and errors
-6. Regression checks
+3. CLI command manifest
+4. Search flags and environment
+5. Structured output
+6. Exit codes and errors
+7. Regression checks
 
 ## Installation and ownership
 
@@ -46,6 +47,7 @@ fast-context key extract [flags]
 fast-context doctor [flags]
 fast-context skills list [--format text|json]
 fast-context skills show <skill> [--format content|json]
+fast-context schema [--format json] [<canonical-command-path>...]
 fast-context version
 fast-context --version
 fast-context -v
@@ -54,6 +56,14 @@ fast-context -v
 `version`, `--version`, and `-v` print the same single line.
 
 Without `--path`, `key extract` checks only the default Linux/WSL Devin CLI TOML. An explicit `--path` can inspect a selected TOML or `state.vscdb`; databases are never discovered automatically. The command bypasses runtime priority resolution, while `doctor` reports the effective source used by `search`.
+
+## CLI command manifest
+
+`fast-context schema --format json` returns the full versioned, machine-readable CLI command manifest. `fast-context schema --format json <canonical-command-path...>` returns the same envelope with exactly one command definition; for example, use `search` or `key extract`. A target must be a canonical path. Execution aliases remain supported for backwards compatibility, but the manifest does not encourage or resolve them as targets.
+
+Use the targeted form when the intended command is known; use the full manifest only for first-time generic discovery or caching. The manifest records public command paths, aliases, input schema and argv bindings, default sources/normalization, availability and side effects, plus coarse output and exit-code contracts. Each flag binding includes a stable `order`; adapters emit flags in that order before any positional values. It does not invent a complete schema for existing search payloads, doctor maps, or credential results.
+
+`schema` is JSON-only and static. It completes before runtime default/configuration resolution and does not read credentials, project files, the current directory, or environment values. It does not access the network, write files, or invoke `search`, `doctor`, `key extract`, or Skill-reading handlers. It is not native-tool registration: an Agent or host must deliberately consume and map the returned manifest before using it as a native tool.
 
 ## Search flags and environment
 
@@ -71,6 +81,8 @@ Without `--path`, `key extract` checks only the default Linux/WSL Devin CLI TOML
 | `--no-bootstrap` | Skip the bootstrap keyword and hotspot pass. |
 | `--format` | `text` or `json`. |
 | `--verbose` | Send progress diagnostics to stderr. |
+
+Canonical Agent input for `--timeout` is `1s..300s`. This does not narrow existing explicit argv compatibility: `--timeout` continues to accept any value accepted by the duration parser. `FC_TIMEOUT_MS`, by contrast, is an environment-provided runtime default and is clamped to `1s..300s`.
 
 Important environment variables:
 
@@ -174,6 +186,7 @@ fast-context --version
 fast-context -v
 fast-context skills list --format json
 fast-context skills show fast-context --format content
+fast-context schema --format json search
 fast-context doctor --project . --format json
 fast-context search "where is CLI command dispatch implemented" --project . --format json
 ```

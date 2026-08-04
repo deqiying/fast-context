@@ -38,6 +38,7 @@ go run ./cmd/fast-context search "where is auth handled" --project . --tree-dept
 | `doctor` | Check project path, ripgrep, credentials, and build metadata. |
 | `skills list` | List embedded Agent Skills. |
 | `skills show <skill>` | Return the raw embedded `SKILL.md` or structured JSON. |
+| `schema [--format json] [<canonical-command-path>...]` | Return the versioned, machine-readable CLI command manifest in full or for one canonical command path. |
 | `version`, `--version`, `-v` | Print the same linker-injected build metadata. |
 
 Load the version-matched Agent Skill directly from the CLI:
@@ -46,6 +47,21 @@ Load the version-matched Agent Skill directly from the CLI:
 fast-context skills list --format json
 fast-context skills show fast-context --format content
 ```
+
+## CLI command manifest
+
+Use `schema` when an Agent or adapter needs an exact, machine-readable command contract. Known commands can be invoked directly; query one canonical path when its flags or bindings are needed, and read the full manifest only for first-time generic discovery or caching:
+
+```powershell
+# Full manifest: all public executable commands.
+fast-context schema --format json
+
+# Targeted manifest: exactly one canonical command definition.
+fast-context schema --format json search
+fast-context schema --format json key extract
+```
+
+Targets accept canonical paths only. Compatibility aliases remain executable, but callers should not generate them from the manifest. `schema` is JSON-only and static: it does not read runtime configuration, credentials, a project, the current directory, or environment values; it does not access the network, write files, or invoke `search`, `doctor`, `key extract`, or Skill-reading handlers. The manifest describes command input and coarse output/exit-code contracts; it does not register a native tool automatically. A host that needs native tool calling must explicitly consume and map the manifest.
 
 ## Search pipeline
 
@@ -60,7 +76,7 @@ fast-context skills show fast-context --format content
 
 ## Configuration
 
-Flags override environment variables; both are clamped to safe ranges.
+Flags override runtime defaults. Integer flag values and their environment-backed defaults are clamped to their documented safe ranges. `FC_TIMEOUT_MS` is an environment default clamped to `1s..300s`; an explicit `--timeout` retains the historical compatibility behavior of accepting any value the duration parser accepts, rather than being clamped to that range. The command manifest exposes `1s..300s` as the canonical Agent input range without narrowing explicit legacy argv compatibility.
 
 The CLI also reads an optional user-level JSON file at `$HOME/.config/fast-context/config.json`:
 

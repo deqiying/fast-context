@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deqiying/fast-context/internal/commandcontract"
 	"github.com/deqiying/fast-context/internal/config"
 	"github.com/deqiying/fast-context/internal/credentials"
 	"github.com/deqiying/fast-context/internal/executor"
@@ -21,194 +22,76 @@ import (
 )
 
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		printRootHelp(stdout)
-		return 0
-	}
-
-	switch args[0] {
-	case "-h", "--help", "help":
-		printRootHelp(stdout)
-		return 0
-	case "--version", "-v":
-		printVersion(stdout)
-		return 0
-	case "search":
-		return runSearch(ctx, args[1:], stdout, stderr)
-	case "key":
-		return runKey(args[1:], stdout, stderr)
-	case "doctor":
-		return runDoctor(args[1:], stdout, stderr)
-	case "skills":
-		return runSkills(args[1:], stdout, stderr)
-	case "version":
-		printVersion(stdout)
-		return 0
-	default:
-		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
-		printRootHelp(stderr)
-		return 2
-	}
+	return executeWithRegistryAndHandlers(ctx, defaultCommandRegistry, defaultCommandHandlers, args, stdout, stderr)
 }
 
-func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	rt := config.ReadRuntime()
-	opts := search.Options{
-		ProjectRoot: cwd(),
-		TreeDepth:   config.DefaultTreeDepth,
-		MaxTurns:    rt.MaxTurns,
-		MaxCommands: rt.MaxCommands,
-		MaxResults:  config.DefaultMaxResults,
-		Timeout:     rt.Timeout,
-		Format:      "text",
-
-		RepoMapMode:          rt.RepoMapMode,
-		BootstrapEnabled:     rt.BootstrapEnabled,
-		BootstrapTreeDepth:   rt.BootstrapTreeDepth,
-		BootstrapMaxTurns:    rt.BootstrapMaxTurns,
-		BootstrapMaxCommands: rt.BootstrapMaxCommands,
-		HotspotTopK:          rt.HotspotTopK,
-		HotspotTreeDepth:     rt.HotspotTreeDepth,
-		HotspotMaxBytes:      rt.HotspotMaxBytes,
-		IncludeSnippets:      rt.IncludeSnippets,
-		Verbose:              rt.Debug,
+func executeWithRegistryAndHandlers(ctx context.Context, registry *commandcontract.Registry, handlers map[string]commandHandler, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		printRegistryRootHelp(stdout, registry)
+		return 0
+	}
+	if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		printRegistryRootHelp(stdout, registry)
+		return 0
+	}
+	if args[0] == "--version" || args[0] == "-v" {
+		printVersion(stdout)
+		return 0
 	}
 
-	var queryParts []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "-h" || arg == "--help" {
-			printSearchHelp(stdout)
-			return 0
+	route, ok := resolveCommandRoute(registry, args)
+	if !ok {
+		if namespace, namespaceOK := namespaceForInvocation(registry, args); namespaceOK {
+			tail := args[len(namespace.Path):]
+			if len(tail) == 0 || tail[0] == "help" || tail[0] == "-h" || tail[0] == "--help" {
+				printNamespaceHelp(stdout, registry, namespace)
+				return 0
+			}
+			return usageError(stderr, fmt.Sprintf("unknown %s command: %s", strings.Join(namespace.Path, " "), tail[0]))
 		}
-		if !strings.HasPrefix(arg, "-") {
-			queryParts = append(queryParts, arg)
-			continue
-		}
-		name, value, hasValue := splitFlag(arg)
-		readValue := func() (string, bool) {
-			if hasValue {
-				return value, true
-			}
-			if i+1 >= len(args) {
-				return "", false
-			}
-			i++
-			return args[i], true
-		}
-
-		switch name {
-		case "--project", "-p":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --project")
-			}
-			opts.ProjectRoot = v
-		case "--tree-depth":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --tree-depth")
-			}
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return usageError(stderr, "invalid --tree-depth")
-			}
-			opts.TreeDepth = config.ClampInt(n, 0, 6)
-		case "--max-turns":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --max-turns")
-			}
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return usageError(stderr, "invalid --max-turns")
-			}
-			opts.MaxTurns = config.ClampInt(n, 1, 5)
-		case "--max-commands":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --max-commands")
-			}
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return usageError(stderr, "invalid --max-commands")
-			}
-			opts.MaxCommands = config.ClampInt(n, 1, 20)
-		case "--max-results":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --max-results")
-			}
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return usageError(stderr, "invalid --max-results")
-			}
-			opts.MaxResults = config.ClampInt(n, 1, 30)
-		case "--timeout":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --timeout")
-			}
-			d, err := parseDuration(v)
-			if err != nil {
-				return usageError(stderr, "invalid --timeout")
-			}
-			opts.Timeout = d
-		case "--exclude":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --exclude")
-			}
-			opts.ExcludePaths = append(opts.ExcludePaths, v)
-		case "--format":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --format")
-			}
-			if v != "text" && v != "json" {
-				return usageError(stderr, "--format must be text or json")
-			}
-			opts.Format = v
-		case "--include-snippets":
-			opts.IncludeSnippets = true
-		case "--repo-map-mode":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --repo-map-mode")
-			}
-			if v != "classic" && v != "bootstrap_hotspot" {
-				return usageError(stderr, "--repo-map-mode must be classic or bootstrap_hotspot")
-			}
-			opts.RepoMapMode = v
-		case "--no-bootstrap":
-			opts.BootstrapEnabled = false
-		case "--verbose":
-			opts.Verbose = true
-		default:
-			return usageError(stderr, "unknown flag: "+name)
-		}
+		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
+		printRegistryRootHelp(stderr, registry)
+		return 2
 	}
 
-	opts.Query = strings.TrimSpace(strings.Join(queryParts, " "))
-	if opts.Query == "" {
-		return usageError(stderr, "missing search query")
+	tail := args[route.Consumed:]
+	if hasCommandHelpToken(route.Definition, tail) {
+		printCommandHelp(stdout, route.Definition)
+		return 0
 	}
+	parsed, err := parseCommand(route.Definition, tail)
+	if err != nil {
+		if route.Definition.ID == "schema" {
+			return writeSchemaArgumentError(registry, stdout, stderr, err.Error())
+		}
+		return usageError(stderr, err.Error())
+	}
+	handler := handlers[route.Definition.ID]
+	if handler == nil {
+		fmt.Fprintf(stderr, "Error: command handler is unavailable: %s\n", route.Definition.ID)
+		return 1
+	}
+	return handler(ctx, registry, parsed, stdout, stderr)
+}
+
+func runParsedSearch(ctx context.Context, parsed ParsedCommand, stdout, stderr io.Writer) int {
+	opts := buildSearchOptions(parsed, config.ReadRuntime(), cwd())
 	if opts.Verbose {
-		opts.Progress = func(msg string) {
-			fmt.Fprintln(stderr, msg)
+		opts.Progress = func(message string) {
+			fmt.Fprintln(stderr, message)
 		}
 	}
 
 	client := windsurf.NewClient(nil)
 	result, err := search.RunPipeline(ctx, opts, client)
 	if opts.Format == "json" {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
 		if err != nil {
-			_ = enc.Encode(output.ErrorJSON(err, result))
+			_ = encoder.Encode(output.ErrorJSON(err, result))
 			return 1
 		}
-		_ = enc.Encode(result)
+		_ = encoder.Encode(result)
 		return 0
 	}
 	if err != nil {
@@ -219,66 +102,72 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return 0
 }
 
-func runKey(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		printKeyHelp(stdout)
-		return 0
-	}
-	if args[0] != "extract" {
-		return usageError(stderr, "unknown key command: "+args[0])
-	}
+func buildSearchOptions(parsed ParsedCommand, runtimeDefaults config.Runtime, workingDirectory string) search.Options {
+	opts := search.Options{
+		Query:        parsed.String("query"),
+		ProjectRoot:  workingDirectory,
+		TreeDepth:    parsed.Int("tree_depth"),
+		MaxTurns:     runtimeDefaults.MaxTurns,
+		MaxCommands:  runtimeDefaults.MaxCommands,
+		MaxResults:   parsed.Int("max_results"),
+		Timeout:      runtimeDefaults.Timeout,
+		ExcludePaths: parsed.Strings("exclude"),
+		Format:       parsed.String("format"),
 
-	var explicitPath string
-	format := "text"
-	for i := 1; i < len(args); i++ {
-		name, value, hasValue := splitFlag(args[i])
-		readValue := func() (string, bool) {
-			if hasValue {
-				return value, true
-			}
-			if i+1 >= len(args) {
-				return "", false
-			}
-			i++
-			return args[i], true
-		}
-		switch name {
-		case "-h", "--help":
-			printKeyHelp(stdout)
-			return 0
-		case "--path":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --path")
-			}
-			explicitPath = v
-		case "--format":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --format")
-			}
-			if v != "text" && v != "json" {
-				return usageError(stderr, "--format must be text or json")
-			}
-			format = v
-		default:
-			return usageError(stderr, "unknown flag: "+name)
-		}
+		RepoMapMode:          runtimeDefaults.RepoMapMode,
+		BootstrapEnabled:     runtimeDefaults.BootstrapEnabled,
+		BootstrapTreeDepth:   runtimeDefaults.BootstrapTreeDepth,
+		BootstrapMaxTurns:    runtimeDefaults.BootstrapMaxTurns,
+		BootstrapMaxCommands: runtimeDefaults.BootstrapMaxCommands,
+		HotspotTopK:          runtimeDefaults.HotspotTopK,
+		HotspotTreeDepth:     runtimeDefaults.HotspotTreeDepth,
+		HotspotMaxBytes:      runtimeDefaults.HotspotMaxBytes,
+		IncludeSnippets:      runtimeDefaults.IncludeSnippets,
+		Verbose:              runtimeDefaults.Debug,
 	}
+	if parsed.Present["project"] {
+		opts.ProjectRoot = parsed.String("project")
+	}
+	if parsed.Present["max_turns"] {
+		opts.MaxTurns = parsed.Int("max_turns")
+	}
+	if parsed.Present["max_commands"] {
+		opts.MaxCommands = parsed.Int("max_commands")
+	}
+	if parsed.Present["timeout_ms"] {
+		opts.Timeout = parsed.Duration("timeout_ms")
+	}
+	if parsed.Present["repo_map_mode"] {
+		opts.RepoMapMode = parsed.String("repo_map_mode")
+	}
+	if parsed.Present["include_snippets"] {
+		opts.IncludeSnippets = parsed.Bool("include_snippets")
+	}
+	if parsed.Present["verbose"] {
+		opts.Verbose = parsed.Bool("verbose")
+	}
+	if parsed.Present["no_bootstrap"] && parsed.Bool("no_bootstrap") {
+		opts.BootstrapEnabled = false
+	}
+	return opts
+}
 
+func runParsedKeyExtract(parsed ParsedCommand, stdout, stderr io.Writer) int {
+	explicitPath := parsed.String("path")
+	format := parsed.String("format")
 	info, err := credentials.Extract(explicitPath)
 	if format == "json" {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
 		if err != nil {
-			_ = enc.Encode(map[string]any{
+			_ = encoder.Encode(map[string]any{
 				"ok":          false,
 				"error":       err.Error(),
 				"tried_paths": info.TriedPaths,
 			})
 			return 1
 		}
-		_ = enc.Encode(map[string]any{
+		_ = encoder.Encode(map[string]any{
 			"ok":          true,
 			"source":      info.SourcePath,
 			"source_type": info.SourceType,
@@ -297,52 +186,20 @@ func runKey(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	fmt.Fprintf(stdout, "Windsurf API key found\n\n")
+	fmt.Fprintln(stdout, "Windsurf API key found")
+	fmt.Fprintln(stdout)
 	fmt.Fprintf(stdout, "Key: %s\n", credentials.Redact(info.APIKey))
 	fmt.Fprintf(stdout, "Length: %d\n", len(info.APIKey))
 	fmt.Fprintf(stdout, "Source: %s\n", info.SourcePath)
 	return 0
 }
 
-func runDoctor(args []string, stdout, stderr io.Writer) int {
+func runParsedDoctor(parsed ParsedCommand, stdout, _ io.Writer) int {
 	project := cwd()
-	format := "text"
-	for i := 0; i < len(args); i++ {
-		name, value, hasValue := splitFlag(args[i])
-		readValue := func() (string, bool) {
-			if hasValue {
-				return value, true
-			}
-			if i+1 >= len(args) {
-				return "", false
-			}
-			i++
-			return args[i], true
-		}
-		switch name {
-		case "-h", "--help":
-			printDoctorHelp(stdout)
-			return 0
-		case "--project", "-p":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --project")
-			}
-			project = v
-		case "--format":
-			v, ok := readValue()
-			if !ok {
-				return usageError(stderr, "missing value for --format")
-			}
-			if v != "text" && v != "json" {
-				return usageError(stderr, "--format must be text or json")
-			}
-			format = v
-		default:
-			return usageError(stderr, "unknown flag: "+name)
-		}
+	if parsed.Present["project"] {
+		project = parsed.String("project")
 	}
-
+	format := parsed.String("format")
 	absProject, projectErr := filepath.Abs(project)
 	rgPath, rgSource, rgErr := executor.FindRipgrepWithSource()
 	keyInfo, keyErr := credentials.FindAPIKey()
@@ -376,13 +233,14 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		},
 	}
 	if format == "json" {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(report)
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		_ = encoder.Encode(report)
 		return 0
 	}
 
-	fmt.Fprintf(stdout, "fast-context doctor\n\n")
+	fmt.Fprintln(stdout, "fast-context doctor")
+	fmt.Fprintln(stdout)
 	fmt.Fprintf(stdout, "project: %s\n", absProject)
 	fmt.Fprintf(stdout, "project_exists: %t\n", projectOK)
 	if rgErr == nil {
@@ -400,31 +258,31 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func splitFlag(arg string) (name, value string, hasValue bool) {
-	if i := strings.Index(arg, "="); i >= 0 {
-		return arg[:i], arg[i+1:], true
+func splitFlag(argument string) (name, value string, hasValue bool) {
+	if index := strings.Index(argument, "="); index >= 0 {
+		return argument[:index], argument[index+1:], true
 	}
-	return arg, "", false
+	return argument, "", false
 }
 
 func parseDuration(raw string) (time.Duration, error) {
-	if n, err := strconv.Atoi(raw); err == nil {
-		return time.Duration(n) * time.Millisecond, nil
+	if milliseconds, err := strconv.Atoi(raw); err == nil {
+		return time.Duration(milliseconds) * time.Millisecond, nil
 	}
 	return time.ParseDuration(raw)
 }
 
 func cwd() string {
-	wd, err := os.Getwd()
+	workingDirectory, err := os.Getwd()
 	if err != nil {
 		return "."
 	}
-	return wd
+	return workingDirectory
 }
 
 func dirExists(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && st.IsDir()
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func errorString(err error) string {
@@ -434,91 +292,11 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-func usageError(stderr io.Writer, msg string) int {
-	fmt.Fprintf(stderr, "Error: %s\n", msg)
+func usageError(stderr io.Writer, message string) int {
+	fmt.Fprintf(stderr, "Error: %s\n", message)
 	return 2
 }
 
 func printVersion(w io.Writer) {
 	fmt.Fprintf(w, "fast-context %s (%s, %s)\n", version.Version, version.Commit, version.Date)
-}
-
-func printRootHelp(w io.Writer) {
-	fmt.Fprint(w, `fast-context is a CLI version of the fast-context MCP code search tool.
-
-Usage:
-  fast-context search <query> [flags]
-  fast-context key extract [flags]
-  fast-context doctor [flags]
-  fast-context skills list [flags]
-  fast-context skills show <skill> [flags]
-  fast-context version
-  fast-context --version
-  fast-context -v
-
-Credentials:
-  FAST_CONTEXT_KEY   Explicit fast-context key (highest priority)
-  Local config       $HOME/.config/fast-context/config.json
-  WINDSURF_API_KEY   Compatibility environment variable
-
-`)
-}
-
-func printSearchHelp(w io.Writer) {
-	fmt.Fprint(w, `Usage:
-  fast-context search <query> [flags]
-
-Flags:
-  --project, -p <path>       Project root (default: current directory)
-  --tree-depth <0..6>        Repo map depth; 0 = auto by project size (default: 3)
-  --max-turns <1..5>         Search rounds (default: 3)
-  --max-commands <1..20>     Local commands per round (default: 8)
-  --max-results <1..30>      Maximum result files (default: 10)
-  --timeout <duration>       Stream timeout, e.g. 30s or 30000 (default: 30s)
-  --exclude <pattern>        Exclude path pattern; repeatable (defaults always applied)
-  --include-snippets         Attach code snippets to results (45KB budget)
-  --repo-map-mode <mode>     classic | bootstrap_hotspot (default: bootstrap_hotspot)
-  --no-bootstrap             Skip the bootstrap keyword/hotspot pre-pass
-  --format <text|json>       Output format (default: text)
-  --verbose                  Print progress to stderr
-
-Environment:
-  FC_MAX_TURNS, FC_MAX_COMMANDS, FC_TIMEOUT_MS, FC_REPO_MAP_MODE,
-  FC_BOOTSTRAP_ENABLED, FC_BOOTSTRAP_TREE_DEPTH, FC_BOOTSTRAP_MAX_TURNS,
-  FC_BOOTSTRAP_MAX_COMMANDS, FC_HOTSPOT_TOP_K, FC_HOTSPOT_TREE_DEPTH,
-  FC_HOTSPOT_MAX_BYTES, FC_INCLUDE_SNIPPETS, FAST_CONTEXT_DEBUG,
-  FAST_CONTEXT_KEY, WINDSURF_API_KEY
-
-`)
-}
-
-func printKeyHelp(w io.Writer) {
-	fmt.Fprint(w, `Usage:
-  fast-context key extract [flags]
-
-Flags:
-  --path <path>              Read a specific .toml or state.vscdb source
-  --format <text|json>       Output format (default: text)
-
-Without --path, this command checks only the default Linux/WSL Devin CLI TOML.
-Windsurf/Devin state.vscdb files are never discovered automatically; pass
---path to inspect one explicitly. Use 'fast-context doctor' to inspect the
-effective runtime credential source and its priority.
-
-`)
-}
-
-func printDoctorHelp(w io.Writer) {
-	fmt.Fprint(w, `Usage:
-  fast-context doctor [flags]
-
-Flags:
-  --project, -p <path>       Project root to inspect
-  --format <text|json>       Output format (default: text)
-
-Credentials are resolved in this order: FAST_CONTEXT_KEY, local config,
-WINDSURF_API_KEY, then the Linux/WSL Devin CLI TOML. Windsurf/Devin
-state.vscdb files are never discovered automatically.
-
-`)
 }
