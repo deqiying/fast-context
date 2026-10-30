@@ -76,6 +76,9 @@ type Meta struct {
 	ProjectRoot    string   `json:"project_root,omitempty"`
 	ErrorCode      string   `json:"error_code,omitempty"`
 	ContextTrimmed bool     `json:"context_trimmed,omitempty"`
+	// Salvaged 表示模型未通过 answer 工具正常收尾，结果来自其回复文本或已执行
+	// 的 readfile 证据；调用方应把这些候选视为部分结果并在本地验证。
+	Salvaged bool `json:"salvaged_response,omitempty"`
 }
 
 type Message struct {
@@ -98,4 +101,6 @@ type Client interface {
 type ToolCall struct {
 	Name string
 	Args map[string]any
+	// Repaired 表示参数 JSON 经过本地语法修复后才可解析，仅用于诊断输出。
+	Repaired bool
 }

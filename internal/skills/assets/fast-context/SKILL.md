@@ -93,6 +93,7 @@ fast-context search `
 - Do not set `--tree-depth`, `--max-turns`, or `--max-commands` preemptively. Tune them from the targeted schema only after a concrete scope, result, or budget problem appears.
 - Narrow `--project` before increasing search rounds when results are broad or empty.
 - Read every returned source range and use exact `rg` references, tests, builds, or runtime checks before editing or answering.
+- Treat `meta.salvaged_response=true` as a partial result recovered without a final model answer; verify it more carefully or narrow `--project` and search again.
 
 ## Fall back without blocking the task
 

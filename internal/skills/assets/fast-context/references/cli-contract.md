@@ -181,7 +181,9 @@ Use `--format content` when an Agent needs to load Markdown directly; JSON escap
 
 ### `search --format json`
 
-Successful output contains `files`, optional `rg_patterns`, and `meta`. Each file contains a path and zero or more 1-based inclusive line ranges. Optional `meta.context_trimmed=true` reports bounded request compaction or recovery. Treat all results as candidates and verify them locally.
+Successful output contains `files`, optional `rg_patterns`, and `meta`. Each file contains a path and zero or more 1-based inclusive line ranges. Optional `meta.context_trimmed=true` reports bounded request compaction or recovery. Optional `meta.salvaged_response=true` means the remote model never called its final `answer` tool; the files were recovered from its reply or from files it had already read, and may be incomplete. Treat all results as candidates and verify them locally.
+
+`search` exits with code `1` before any credential read or network request when the effective project root is exactly the user home directory or a filesystem root. Pass a specific repository with `--project` instead.
 
 Failed JSON output contains `error.message`, `error.code`, and optional `meta.error_code` / `meta.context_trimmed`. Valid remote structured codes remain lowercase, such as `invalid_argument`; local categories remain uppercase.
 

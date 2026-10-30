@@ -36,6 +36,9 @@ const (
 
 	maxRemoteErrorBodyBytes = 64 * 1024
 	maxRemoteMessageBytes   = 2 * 1024
+	// minPlainResponseRunes 对齐 npm 1.5.2 的 `s.length > 10`：过滤 protobuf 中
+	// 偶然可解码的短 ID/枚举字符串，仅保留像模型文本的字段。
+	minPlainResponseRunes = 10
 )
 
 var (
@@ -200,6 +203,7 @@ func (c *Client) ParseResponse(data []byte) (string, *search.ToolCall, error) {
 		return "", nil, &Error{code: "PROTOCOL", err: err}
 	}
 	var all strings.Builder
+	var plain strings.Builder
 	for _, frame := range frames {
 		if remote, ok := parseRemoteError(frame); ok {
 			return "", nil, remoteTypedError(remote, "PROTOCOL")
@@ -214,10 +218,17 @@ func (c *Client) ParseResponse(data []byte) (string, *search.ToolCall, error) {
 			}
 			if strings.Contains(s, "[TOOL_CALLS]") || strings.Contains(s, "<ANSWER>") {
 				all.WriteString(s)
+			} else if utf8.RuneCountInString(s) > minPlainResponseRunes {
+				plain.WriteString(s)
 			}
 		}
 	}
 	text := all.String()
+	if text == "" {
+		// 与 npm 1.5.2 对齐：模型既未调用工具也未给出 <ANSWER> 时保留其纯文本回复，
+		// 使上层能够触发无结果收窄重试、尝试抢救证据并输出真实 raw_response 诊断。
+		return plain.String(), nil, nil
+	}
 	toolCall, thinking, err := search.ParseToolCall(text)
 	if err != nil {
 		return thinking, nil, &Error{code: "PROTOCOL", err: err}

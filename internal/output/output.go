@@ -21,6 +21,9 @@ func FormatText(result search.Result, opts search.Options) string {
 		b.WriteString(strings.Join(result.RetryNotes, "\n"))
 		b.WriteString("\n\n")
 	}
+	if result.Meta.Salvaged {
+		b.WriteString("[note] The remote model did not return a final answer; these candidates were salvaged from its partial output. Verify them before use.\n\n")
+	}
 
 	n := len(files)
 	if n > 0 {
@@ -192,6 +195,7 @@ func FormatError(err error, opts search.Options, result search.Result) string {
 		b.WriteString("[hint] Payload/timeout error. Try: reduce --tree-depth, reduce --max-turns, add --exclude, or narrow --project to a subdirectory.\n")
 	case "AUTH_ERROR":
 		b.WriteString("[hint] Authentication error. The key may be expired or revoked. Run `fast-context doctor --format json`, set FAST_CONTEXT_KEY, repair $HOME/.config/fast-context/config.json, or set WINDSURF_API_KEY. To inspect a legacy database, run `fast-context key extract --path <state.vscdb>` and configure the extracted key explicitly.\n")
+		b.WriteString("[hint] On WSL/Linux, a key extracted on Windows often returns HTTP 403; run `devin login` inside WSL so ~/.local/share/devin/credentials.toml exists, then retry.\n")
 	case "RATE_LIMITED":
 		b.WriteString("[hint] Rate limited. Wait a moment and retry.\n")
 	case "invalid_argument":

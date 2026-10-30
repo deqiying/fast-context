@@ -61,6 +61,9 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 	if !st.IsDir() {
 		return Result{}, fmt.Errorf("project path is not a directory: %s", projectRoot)
 	}
+	if err := rejectBroadProjectRoot(projectRoot); err != nil {
+		return Result{}, err
+	}
 	policy := opts.pathPolicy
 	if policy == nil {
 		policy, err = pathfilter.New(projectRoot, config.MergeExcludePaths(opts.ExcludePaths))
@@ -146,6 +149,8 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 	normalizedQuery, _ := textutil.NormalizeUTF8(opts.Query)
 	state := &trimState{query: normalizedQuery}
 	invalidArgumentRetried := false
+	// executedCommands 记录已通过校验并执行的命令，供轮次耗尽时抢救 readfile 证据。
+	var executedCommands []executor.NamedCommand
 
 	for turn := 0; turn < totalAPICalls+compensatedTurns; turn++ {
 		progress(fmt.Sprintf("Turn %d/%d", turn+1, totalAPICalls))
@@ -216,9 +221,21 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 			if strings.HasPrefix(thinking, "[Error]") {
 				return Result{Meta: meta, Raw: thinking}, errors.New(thinking)
 			}
-			return Result{Meta: meta, Raw: thinking}, nil
+			result := Result{Meta: meta, Raw: thinking}
+			collector := newSalvageCollector(execEngine, projectRoot)
+			collector.addText(thinking)
+			if files := filterResultFiles(collector.files, policy); len(files) > 0 {
+				result.Files = files
+				result.RGPatterns = unique(execEngine.CollectedRgPatterns)
+				result.Meta.Salvaged = true
+				progress(fmt.Sprintf("No answer tool call; salvaged %d files from the model response", len(files)))
+			}
+			return result, nil
 		}
 
+		if toolInfo.Repaired {
+			progress(fmt.Sprintf("Tool arguments on turn %d were repaired locally before validation", turn+1))
+		}
 		switch toolInfo.Name {
 		case "answer":
 			answerXML, _ := toolInfo.Args["answer"].(string)
@@ -246,6 +263,7 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 				progress(fmt.Sprintf("Turn compensation: no valid commands, extending search by 1 turn (%d/%d)", compensatedTurns, maxCompensations))
 			}
 			state.record(batch.Commands)
+			executedCommands = append(executedCommands, batch.Commands...)
 			thinking, _ = textutil.TruncateUTF8Bytes(
 				thinking,
 				maxAssistantThinkingBytes,
@@ -270,8 +288,22 @@ func Run(ctx context.Context, opts Options, client Client) (Result, error) {
 		}
 	}
 
+	// 轮次耗尽：先尝试从模型已读取的文件与已收集的 rg 关键词中抢救部分结果，
+	// 只有确实没有任何可验证证据时才返回错误。
+	patterns := unique(execEngine.CollectedRgPatterns)
+	collector := newSalvageCollector(execEngine, projectRoot)
+	collector.addReadfiles(executedCommands)
+	if len(collector.files) > 0 || len(patterns) > 0 {
+		meta.Salvaged = true
+		progress(fmt.Sprintf("Max turns reached without a final answer; salvaged %d files and %d rg patterns", len(collector.files), len(patterns)))
+		return Result{
+			Files:      filterResultFiles(collector.files, policy),
+			RGPatterns: patterns,
+			Meta:       meta,
+		}, nil
+	}
 	return Result{
-		RGPatterns: unique(execEngine.CollectedRgPatterns),
+		RGPatterns: patterns,
 		Meta:       meta,
 	}, errors.New("max turns reached without getting an answer")
 }

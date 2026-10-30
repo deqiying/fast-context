@@ -48,6 +48,20 @@ func TestFormatTextIncludesCandidateEvidenceAndConfig(t *testing.T) {
 	}
 }
 
+func TestFormatTextMarksSalvagedResults(t *testing.T) {
+	result := search.Result{
+		Files: []search.ResultFile{{FullPath: "D:/repo/auth.go", Ranges: []search.LineRange{}}},
+		Meta:  search.Meta{Salvaged: true},
+	}
+	text := FormatText(result, search.Options{Timeout: 30 * time.Second})
+	if !strings.Contains(text, "salvaged from its partial output") {
+		t.Fatalf("salvaged result note missing:\n%s", text)
+	}
+	if strings.Contains(FormatText(search.Result{Files: result.Files}, search.Options{}), "salvaged") {
+		t.Fatal("normal results must not carry the salvage note")
+	}
+}
+
 func TestErrorFormatsPreserveStableCode(t *testing.T) {
 	err := codedError{code: "AUTH_ERROR", err: errors.New("fixture authentication failure")}
 	formatted := FormatError(err, search.Options{TreeDepth: 3, MaxTurns: 3, MaxResults: 10, MaxCommands: 8, Timeout: 30 * time.Second}, search.Result{})
@@ -56,6 +70,9 @@ func TestErrorFormatsPreserveStableCode(t *testing.T) {
 	}
 	if strings.Contains(formatted, "fixture authentication failure") == false {
 		t.Fatal("formatted error should preserve the non-sensitive error message")
+	}
+	if !strings.Contains(formatted, "devin login") || !strings.Contains(formatted, "HTTP 403") {
+		t.Fatalf("AUTH_ERROR hint should cover the WSL Devin CLI login case:\n%s", formatted)
 	}
 
 	structured := ErrorJSON(err, search.Result{})

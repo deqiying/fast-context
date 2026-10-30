@@ -1,6 +1,6 @@
 # fast-context
 
-Go CLI version of `fast-context-mcp`, feature-aligned with npm `fast-context-mcp@1.5.2`. The upstream GitHub repository is stale at v1.2.2, so use `npm pack fast-context-mcp@latest` as the behavior-comparison baseline.
+Go CLI version of `fast-context-mcp`, feature-aligned with npm `fast-context-mcp@1.5.2`, which is still the `latest` release of that package name. Treat `npm pack fast-context-mcp@latest` as the behavior-comparison baseline; GitHub sources are not guaranteed to match published packages. Selected later improvements are adopted from the npm forks `@philau2512/fast-context-mcp@1.5.7` (home/root project guard, WSL `devin login` hint) and `@sammysnake/fast-context-mcp@1.3.2` (tool-argument JSON repair, partial-result salvage). All three packages use the same Windsurf wire protocol as this CLI.
 
 The CLI keeps semantic search, explicit credential configuration and inspection, restricted local tools, structured output, and an embedded Agent Skill in one Go binary. npm distribution adds a small JavaScript launcher, three platform packages, and a bundled ripgrep dependency.
 
@@ -82,10 +82,11 @@ JSON layout is determined only by argv, never by TTY, pipes, redirection, or the
 
 1. **Bootstrap phase** (default on): a cheap two-turn pre-pass over an L1 tree collects ripgrep patterns and hotspot directories.
 2. **Hotspot repo map** (`bootstrap_hotspot`): a shallow global tree plus deeper subtrees for top directories scored by BM25F, probe grep, Git RFM, and file aggregation, fused with RRF. `--repo-map-mode classic` restores the plain adaptive tree.
-3. **Multi-turn search** with smart context trimming, UTF-8-safe tool results, and a final 320 KB uncompressed protobuf gate before HTTP.
-4. **No-result retry**: up to two narrower project roots are tried automatically when no path can be parsed.
-5. **Grep keyword expansion**: collected patterns run locally to supplement missed files without another API call.
-6. **Optional snippets**: `--include-snippets` adds line-numbered code under a 45 KB output budget.
+3. **Multi-turn search** with smart context trimming, UTF-8-safe tool results, and a final 320 KB uncompressed protobuf gate before HTTP. Common tool-argument JSON defects (unquoted or half-quoted keys, trailing commas) are repaired locally once, outside string values, before strict command validation; only unrepairable arguments cost a corrective round.
+4. **No-result retry**: when the model replies with plain text and no usable path, the reply is kept as `raw_response` and up to two narrower project roots are tried automatically.
+5. **Partial-result salvage**: when the model never calls the `answer` tool, existing in-project files from a text `<ANSWER>` block, `/codebase/...` paths in its reply, or files it already read when turns run out are returned as candidates with `meta.salvaged_response=true`. Every salvaged path must map to an existing, non-excluded regular file inside the project. Turn exhaustion without any salvageable file or rg pattern remains an error.
+6. **Grep keyword expansion**: collected patterns run locally to supplement missed files without another API call.
+7. **Optional snippets**: `--include-snippets` adds line-numbered code under a 45 KB output budget.
 
 `--tree-depth 0` selects project-size auto depth only in `classic` mode: fewer than 500 entries uses 4, up to 5000 uses 3, and larger trees use 2. In the default `bootstrap_hotspot` mode, the global map uses `FC_BOOTSTRAP_TREE_DEPTH`, selected hotspot subtrees use `FC_HOTSPOT_TREE_DEPTH`, and a requested depth may raise the hotspot depth. JSON `meta.tree_depth` is the global-map depth; `meta.hotspot_depth` is the hotspot depth.
 
@@ -137,6 +138,7 @@ The npm launcher sets `FC_RG_PATH` from `@vscode/ripgrep` only when the user has
 ## Security and data boundary
 
 - `search` sends the query, repository map, and requested restricted-tool results to Windsurf. Do not use it when external transmission is not authorized.
+- `search` rejects a project root that is exactly the user home directory or a filesystem root (including the current directory when `--project` is omitted) before reading credentials or making any network request. Repositories below the home directory are unaffected.
 - `--include-snippets` is off by default.
 - The local executor accepts only structured `rg`, `readfile`, `tree`, `ls`, and `glob` commands. `--max-commands` is enforced locally; model output cannot raise the limit.
 - Effective `--exclude` patterns are anchored to the original project root and apply to repo maps, bootstrap/hotspot scoring, retry probes, all restricted-tool reads, grep expansion, final files, and snippets.

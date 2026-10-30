@@ -433,6 +433,21 @@ func (e *Executor) realPath(virtual string) (string, error) {
 	return candidate, nil
 }
 
+// ResolveExistingFile 把模型给出的 /codebase 虚拟路径映射为项目内的真实文件路径。
+// 它复用受限工具的同一组边界检查（项目根、symlink 逃逸、--exclude 策略），并要求
+// 目标是已存在的普通文件，供部分结果抢救使用，避免把模型臆造或越界的路径当作结果。
+func (e *Executor) ResolveExistingFile(virtual string) (string, bool) {
+	full, err := e.realPath(virtual)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(full)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return full, true
+}
+
 func (e *Executor) remap(text string) string {
 	rootSlash := filepath.ToSlash(e.root)
 	text = strings.ReplaceAll(text, e.root, "/codebase")

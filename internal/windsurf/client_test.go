@@ -157,6 +157,42 @@ func TestParseResponseAndMalformedFrame(t *testing.T) {
 	assertErrorCode(t, err, "PROTOCOL")
 }
 
+func TestParseResponseKeepsPlainTextWhenNoMarkers(t *testing.T) {
+	payload := &protowire.Encoder{}
+	payload.String(1, "short-id")
+	payload.String(2, "I could not find any authentication code in this repository.")
+	frame, err := protowire.EncodeConnectFrame(payload.BytesValue(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, toolCall, err := NewClient(nil).ParseResponse(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolCall != nil {
+		t.Fatalf("unexpected tool call: %#v", toolCall)
+	}
+	if text != "I could not find any authentication code in this repository." {
+		t.Fatalf("plain response was not preserved without short protobuf strings: %q", text)
+	}
+}
+
+func TestParseResponseRepairsUnquotedToolArgumentKeys(t *testing.T) {
+	payload := &protowire.Encoder{}
+	payload.String(1, `thinking[TOOL_CALLS]restricted_exec[ARGS]{"command1":{"type":"rg","pattern":"Auth","path":"/codebase",exclude:["**/dist/**"]}}`)
+	frame, err := protowire.EncodeConnectFrame(payload.BytesValue(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, toolCall, err := NewClient(nil).ParseResponse(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolCall == nil || toolCall.Name != "restricted_exec" || !toolCall.Repaired {
+		t.Fatalf("toolCall=%#v", toolCall)
+	}
+}
+
 func TestParseResponseMarksMalformedToolArgumentsRecoverable(t *testing.T) {
 	payload := &protowire.Encoder{}
 	payload.String(1, `[TOOL_CALLS]restricted_exec[ARGS]{"command1",{"type":"rg"}}`)
