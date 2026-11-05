@@ -47,7 +47,24 @@ JSON output defaults to one compact line with one trailing LF. For human inspect
 fast-context schema --pretty
 ```
 
-The CLI never infers layout from TTY, pipes, redirection, or its host. `--pretty` is accepted by `search`, `key extract`, `doctor`, `skills list`, `skills show`, and `schema`; it is ignored for text/content output and never selects JSON by itself. The existing default format of each command is unchanged, and text-only `version` does not support `--pretty`.
+The CLI never infers layout from TTY, pipes, redirection, or its host. `--pretty` is accepted by `search`, `key extract`, `doctor`, `skills list`, `skills show`, and `schema`; it is ignored for text/content output and never selects JSON by itself. The existing default format of each command is unchanged; text-only `version` and protocol-only `mcp serve` do not support `--pretty`.
+
+## MCP server
+
+The same binary can run as a stdio MCP server exposing `fast_context_search` and `fast_context_doctor`. Configure it in an MCP host rather than running it from a shell:
+
+```json
+{
+  "mcpServers": {
+    "fast-context": {
+      "command": "npx",
+      "args": ["-y", "@deqiying/fast-context", "mcp", "serve"]
+    }
+  }
+}
+```
+
+The launcher passes stdin and stdout through unchanged and sets `FC_RG_PATH` as for CLI commands. Provide credentials and `FC_*` settings through the host's `env`; the server reads them once at startup. See the [repository README](https://github.com/deqiying/fast-context#mcp-server) for tool parameters, differences from upstream `fast-context-mcp`, and migration notes.
 
 ## Local credentials
 

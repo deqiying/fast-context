@@ -19,11 +19,12 @@ func rejectBroadProjectRoot(projectRoot string) error {
 func rejectBroadProjectRootWithHome(projectRoot string, homes []string) error {
 	for _, candidate := range pathVariants(projectRoot) {
 		if filepath.Dir(candidate) == candidate {
-			return fmt.Errorf("project path must not be a filesystem root: %s; pass a specific repository with --project", projectRoot)
+			// 措辞不引用 CLI flag：同一错误也会经 MCP 工具返回给 project_path 调用方。
+			return fmt.Errorf("project path must not be a filesystem root: %s; pass a specific repository root", projectRoot)
 		}
 		for _, home := range homes {
 			if samePath(candidate, home) {
-				return fmt.Errorf("project path must not be the user home directory: %s; pass a specific repository with --project", projectRoot)
+				return fmt.Errorf("project path must not be the user home directory: %s; pass a specific repository root", projectRoot)
 			}
 		}
 	}

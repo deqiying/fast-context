@@ -519,6 +519,57 @@
       }
     },
     {
+      "id": "mcp.serve",
+      "path": [
+        "mcp",
+        "serve"
+      ],
+      "category": "utility",
+      "summary": "Serve fast_context_search and fast_context_doctor to an MCP host over stdio; long-running, not for direct Agent shell calls.",
+      "aliases": [],
+      "capabilities": [],
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "availability": {
+        "dynamic": false,
+        "preflight_level": "static"
+      },
+      "side_effects": [
+        "credential_source_read",
+        "environment_read",
+        "external_network",
+        "project_filesystem_read",
+        "repository_context_transmission",
+        "stdio_protocol_session"
+      ],
+      "output": {
+        "default_format": "mcp_stdio",
+        "formats": [
+          "mcp_stdio"
+        ],
+        "contract": "mcp_jsonrpc_stdio_session",
+        "redaction": "credential_material_redacted",
+        "exit_codes": [
+          {
+            "code": 0,
+            "meaning": "session_closed"
+          },
+          {
+            "code": 1,
+            "meaning": "server_runtime_failure"
+          },
+          {
+            "code": 2,
+            "meaning": "invalid_argument"
+          }
+        ]
+      }
+    },
+    {
       "id": "schema",
       "path": [
         "schema"

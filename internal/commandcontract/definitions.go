@@ -15,12 +15,14 @@ func commandDefinitions() []CommandDefinition {
 		skillsShowDefinition(),
 		versionDefinition(),
 		schemaDefinition(),
+		mcpServeDefinition(),
 	}
 }
 
 func namespaceDefinitions() []NamespaceDefinition {
 	return []NamespaceDefinition{
 		{Path: []string{"key"}, Category: CategoryUtility, Summary: "Inspect explicitly selected credential sources."},
+		{Path: []string{"mcp"}, Category: CategoryUtility, Summary: "Run fast-context as a Model Context Protocol server."},
 		{Path: []string{"skills"}, Category: CategoryUtility, Summary: "Inspect Agent Skills embedded in this binary."},
 	}
 }
@@ -319,6 +321,24 @@ func schemaDefinition() CommandDefinition {
 		Output: outputDefinition("json", []string{"json"}, "command_manifest", "", []ExitCodeDefinition{
 			{Code: 0, Meaning: "completed"},
 			{Code: 1, Meaning: "local_output_failure"},
+			{Code: 2, Meaning: "invalid_argument"},
+		}),
+	}
+}
+
+// mcpServeDefinition 描述长驻的 stdio MCP server。它面向 MCP 宿主而非 Agent 的 shell 调用：
+// 副作用只在宿主调用工具时发生，fast_context_search 与 search 相同，fast_context_doctor 与 doctor 相同。
+func mcpServeDefinition() CommandDefinition {
+	return CommandDefinition{
+		ID:           "mcp.serve",
+		Path:         []string{"mcp", "serve"},
+		Category:     CategoryUtility,
+		Summary:      "Serve fast_context_search and fast_context_doctor to an MCP host over stdio; long-running, not for direct Agent shell calls.",
+		Availability: staticAvailability(),
+		SideEffects:  []string{"stdio_protocol_session", "environment_read", "project_filesystem_read", "credential_source_read", "external_network", "repository_context_transmission"},
+		Output: outputDefinition("mcp_stdio", []string{"mcp_stdio"}, "mcp_jsonrpc_stdio_session", "credential_material_redacted", []ExitCodeDefinition{
+			{Code: 0, Meaning: "session_closed"},
+			{Code: 1, Meaning: "server_runtime_failure"},
 			{Code: 2, Meaning: "invalid_argument"},
 		}),
 	}

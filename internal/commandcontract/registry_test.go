@@ -14,15 +14,16 @@ func TestDefaultRegistryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := registry.Commands()
-	if len(commands) != 7 {
-		t.Fatalf("Commands returned %d definitions, want 7", len(commands))
+	if len(commands) != 8 {
+		t.Fatalf("Commands returned %d definitions, want 8", len(commands))
 	}
-	if len(registry.Namespaces()) != 2 {
-		t.Fatalf("Namespaces returned %d definitions, want 2", len(registry.Namespaces()))
+	if len(registry.Namespaces()) != 3 {
+		t.Fatalf("Namespaces returned %d definitions, want 3", len(registry.Namespaces()))
 	}
 	wantPaths := map[string]string{
 		"doctor":      "doctor",
 		"key.extract": "key extract",
+		"mcp.serve":   "mcp serve",
 		"schema":      "schema",
 		"search":      "search",
 		"skills.list": "skills list",
@@ -57,6 +58,20 @@ func TestDefaultRegistryContract(t *testing.T) {
 	doctor, _ := registry.LookupID("doctor")
 	if !contains(doctor.SideEffects, "credential_source_read") {
 		t.Fatalf("doctor side effects omit credential read: %v", doctor.SideEffects)
+	}
+
+	// mcp serve 承载 search 与 doctor 两类工具，副作用至少覆盖二者并声明 stdio 会话占用。
+	mcpServe, ok := registry.LookupID("mcp.serve")
+	if !ok {
+		t.Fatal("mcp.serve definition is missing")
+	}
+	for _, required := range append(append([]string{"stdio_protocol_session"}, search.SideEffects...), doctor.SideEffects...) {
+		if !contains(mcpServe.SideEffects, required) {
+			t.Fatalf("mcp.serve side effects omit %q: %v", required, mcpServe.SideEffects)
+		}
+	}
+	if mcpServe.Availability.Dynamic || len(mcpServe.Options) != 0 || len(mcpServe.Positionals) != 0 {
+		t.Fatalf("mcp.serve must be a static command without inputs: %#v", mcpServe)
 	}
 	list, _ := registry.LookupID("skills.list")
 	show, _ := registry.LookupID("skills.show")

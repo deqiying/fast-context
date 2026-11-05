@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +12,7 @@ import (
 	"github.com/deqiying/fast-context/internal/commandcontract"
 	"github.com/deqiying/fast-context/internal/config"
 	"github.com/deqiying/fast-context/internal/credentials"
-	"github.com/deqiying/fast-context/internal/executor"
+	"github.com/deqiying/fast-context/internal/doctor"
 	"github.com/deqiying/fast-context/internal/output"
 	"github.com/deqiying/fast-context/internal/search"
 	"github.com/deqiying/fast-context/internal/version"
@@ -102,28 +101,13 @@ func runParsedSearch(ctx context.Context, parsed ParsedCommand, stdout, stderr i
 }
 
 func buildSearchOptions(parsed ParsedCommand, runtimeDefaults config.Runtime, workingDirectory string) search.Options {
-	opts := search.Options{
-		Query:        parsed.String("query"),
-		ProjectRoot:  workingDirectory,
-		TreeDepth:    parsed.Int("tree_depth"),
-		MaxTurns:     runtimeDefaults.MaxTurns,
-		MaxCommands:  runtimeDefaults.MaxCommands,
-		MaxResults:   parsed.Int("max_results"),
-		Timeout:      runtimeDefaults.Timeout,
-		ExcludePaths: parsed.Strings("exclude"),
-		Format:       parsed.String("format"),
-
-		RepoMapMode:          runtimeDefaults.RepoMapMode,
-		BootstrapEnabled:     runtimeDefaults.BootstrapEnabled,
-		BootstrapTreeDepth:   runtimeDefaults.BootstrapTreeDepth,
-		BootstrapMaxTurns:    runtimeDefaults.BootstrapMaxTurns,
-		BootstrapMaxCommands: runtimeDefaults.BootstrapMaxCommands,
-		HotspotTopK:          runtimeDefaults.HotspotTopK,
-		HotspotTreeDepth:     runtimeDefaults.HotspotTreeDepth,
-		HotspotMaxBytes:      runtimeDefaults.HotspotMaxBytes,
-		IncludeSnippets:      runtimeDefaults.IncludeSnippets,
-		Verbose:              runtimeDefaults.Debug,
-	}
+	opts := search.DefaultOptions(runtimeDefaults)
+	opts.Query = parsed.String("query")
+	opts.ProjectRoot = workingDirectory
+	opts.TreeDepth = parsed.Int("tree_depth")
+	opts.MaxResults = parsed.Int("max_results")
+	opts.ExcludePaths = parsed.Strings("exclude")
+	opts.Format = parsed.String("format")
 	if parsed.Present["project"] {
 		opts.ProjectRoot = parsed.String("project")
 	}
@@ -200,58 +184,27 @@ func runParsedDoctor(parsed ParsedCommand, stdout, _ io.Writer) int {
 	}
 	format := parsed.String("format")
 	pretty := parsed.Bool("pretty")
-	absProject, projectErr := filepath.Abs(project)
-	rgPath, rgSource, rgErr := executor.FindRipgrepWithSource()
-	keyInfo, keyErr := credentials.FindAPIKey()
-	projectOK := projectErr == nil && dirExists(absProject)
-	rgOK := rgErr == nil
-	credentialsOK := keyErr == nil
-	report := map[string]any{
-		"ok": projectOK && rgOK && credentialsOK,
-		"project": map[string]any{
-			"path":   absProject,
-			"exists": projectOK,
-		},
-		"ripgrep": map[string]any{
-			"ok":     rgOK,
-			"path":   rgPath,
-			"source": rgSource,
-			"error":  errorString(rgErr),
-		},
-		"credentials": map[string]any{
-			"ok":          keyErr == nil,
-			"source":      keyInfo.SourcePath,
-			"source_type": keyInfo.SourceType,
-			"key":         credentials.Redact(keyInfo.APIKey),
-			"error":       errorString(keyErr),
-			"candidates":  credentials.SourceCandidates(),
-		},
-		"version": map[string]string{
-			"version": version.Version,
-			"commit":  version.Commit,
-			"date":    version.Date,
-		},
-	}
+	report := doctor.Inspect(project)
 	if format == "json" {
 		encoder := newJSONEncoder(stdout, pretty)
-		_ = encoder.Encode(report)
+		_ = encoder.Encode(report.JSON())
 		return 0
 	}
 
 	fmt.Fprintln(stdout, "fast-context doctor")
 	fmt.Fprintln(stdout)
-	fmt.Fprintf(stdout, "project: %s\n", absProject)
-	fmt.Fprintf(stdout, "project_exists: %t\n", projectOK)
-	if rgErr == nil {
-		fmt.Fprintf(stdout, "ripgrep: ok (%s)\n", rgPath)
+	fmt.Fprintf(stdout, "project: %s\n", report.ProjectPath)
+	fmt.Fprintf(stdout, "project_exists: %t\n", report.ProjectExists)
+	if report.RipgrepErr == nil {
+		fmt.Fprintf(stdout, "ripgrep: ok (%s)\n", report.RipgrepPath)
 	} else {
-		fmt.Fprintf(stdout, "ripgrep: missing (%s)\n", rgErr)
+		fmt.Fprintf(stdout, "ripgrep: missing (%s)\n", report.RipgrepErr)
 	}
-	if keyErr == nil {
-		fmt.Fprintf(stdout, "credentials: ok (%s, %s)\n", keyInfo.SourceType, keyInfo.SourcePath)
-		fmt.Fprintf(stdout, "key: %s\n", credentials.Redact(keyInfo.APIKey))
+	if report.CredentialsErr == nil {
+		fmt.Fprintf(stdout, "credentials: ok (%s, %s)\n", report.Credentials.SourceType, report.Credentials.SourcePath)
+		fmt.Fprintf(stdout, "key: %s\n", credentials.Redact(report.Credentials.APIKey))
 	} else {
-		fmt.Fprintf(stdout, "credentials: missing (%s)\n", keyErr)
+		fmt.Fprintf(stdout, "credentials: missing (%s)\n", report.CredentialsErr)
 	}
 	fmt.Fprintf(stdout, "insecure_tls: %t\n", os.Getenv("FC_INSECURE_TLS") == "1")
 	return 0
@@ -277,18 +230,6 @@ func cwd() string {
 		return "."
 	}
 	return workingDirectory
-}
-
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func usageError(stderr io.Writer, message string) int {

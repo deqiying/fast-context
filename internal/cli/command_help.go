@@ -10,7 +10,7 @@ import (
 )
 
 func printRegistryRootHelp(w io.Writer, registry *commandcontract.Registry) {
-	fmt.Fprintln(w, "fast-context is a CLI version of the fast-context MCP code search tool.")
+	fmt.Fprintln(w, "fast-context runs AI-driven semantic code search as a CLI, or as a stdio MCP server via `fast-context mcp serve`.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	commands := registry.Commands()
@@ -163,6 +163,9 @@ func printCommandAppendix(w io.Writer, commandID string) {
 	case "doctor":
 		fmt.Fprintln(w, "\nCredentials are resolved in this order: FAST_CONTEXT_KEY, local config,")
 		fmt.Fprintln(w, "WINDSURF_API_KEY, then the Linux/WSL Devin CLI TOML. A failed check is reported through JSON ok while the command still exits 0.")
+	case "mcp.serve":
+		fmt.Fprintln(w, "\nConfigure this command in an MCP host; it reads JSON-RPC messages from stdin until EOF and writes only protocol messages to stdout.")
+		fmt.Fprintln(w, "Logs go to stderr. FC_* and credential environment variables are read once at startup; restart the server after changing them.")
 	case "schema":
 		fmt.Fprintln(w, "\nThe manifest is static and JSON-only. Target lookup accepts canonical command paths only.")
 		fmt.Fprintln(w, "It does not register a native tool or read runtime configuration, credentials, project files, environment values, or network state.")

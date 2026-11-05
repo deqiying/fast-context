@@ -22,14 +22,14 @@ func TestSchemaFullAndTargetedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !full.OK || full.Kind != commandcontract.ManifestKind || full.ManifestVersion != 1 || full.CLI.Name != "fast-context" || full.CLI.Version != "test" || full.Scope.Mode != "all" || len(full.Scope.Path) != 0 || len(full.Commands) != 7 {
+	if !full.OK || full.Kind != commandcontract.ManifestKind || full.ManifestVersion != 1 || full.CLI.Name != "fast-context" || full.CLI.Version != "test" || full.Scope.Mode != "all" || len(full.Scope.Path) != 0 || len(full.Commands) != 8 {
 		t.Fatalf("unexpected full manifest envelope: %#v", full)
 	}
 	if !reflect.DeepEqual(full.ArgvConventions.Ordering, []string{"command_path", "options", "end_of_options_when_needed", "positionals"}) {
 		t.Fatalf("unexpected argv conventions: %#v", full.ArgvConventions)
 	}
 
-	for _, path := range [][]string{{"search"}, {"key", "extract"}, {"schema"}} {
+	for _, path := range [][]string{{"search"}, {"key", "extract"}, {"mcp", "serve"}, {"schema"}} {
 		target, err := BuildManifest(defaultCommandRegistry, "test", path)
 		if err != nil {
 			t.Fatalf("BuildManifest(%v): %v", path, err)
@@ -59,7 +59,7 @@ func TestSchemaCLIReportsStructuredArgumentErrors(t *testing.T) {
 		{"schema", "--unknown"},
 		{"schema", "Skills", "list"},
 	}
-	wantPaths := []string{"doctor", "key extract", "schema", "search", "skills list", "skills show", "version"}
+	wantPaths := []string{"doctor", "key extract", "mcp serve", "schema", "search", "skills list", "skills show", "version"}
 	for _, args := range tests {
 		code, stdout, stderr := executeForTest(t, args...)
 		if code != 2 || stderr != "" {

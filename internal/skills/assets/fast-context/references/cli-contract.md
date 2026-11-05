@@ -57,6 +57,7 @@ Treat that loaded Skill as the sole version-sensitive workflow. Do not attempt `
 fast-context search <query> [flags, including --pretty]
 fast-context key extract [flags, including --pretty]
 fast-context doctor [flags, including --pretty]
+fast-context mcp serve
 fast-context skills list [--format text|json] [--pretty]
 fast-context skills show <skill> [--reference cli-contract] [--format content|json] [--pretty]
 fast-context schema [--format json] [--pretty] [<canonical-command-path>...]
@@ -66,6 +67,8 @@ fast-context -v
 ```
 
 `version`, `--version`, and `-v` print the same single line.
+
+`mcp serve` is a long-running stdio MCP server for MCP host configuration. It blocks reading JSON-RPC from stdin; do not run it from an Agent shell. When the host already exposes its `fast_context_search` and `fast_context_doctor` tools, the same data boundary and verification rules in this contract apply to them.
 
 ## Consume the command manifest
 

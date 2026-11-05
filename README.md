@@ -2,7 +2,7 @@
 
 Go CLI version of `fast-context-mcp`, feature-aligned with npm `fast-context-mcp@1.5.2`, which is still the `latest` release of that package name. Treat `npm pack fast-context-mcp@latest` as the behavior-comparison baseline; GitHub sources are not guaranteed to match published packages. Selected later improvements are adopted from the npm forks `@philau2512/fast-context-mcp@1.5.7` (home/root project guard, WSL `devin login` hint) and `@sammysnake/fast-context-mcp@1.3.2` (tool-argument JSON repair, partial-result salvage). All three packages use the same Windsurf wire protocol as this CLI.
 
-The CLI keeps semantic search, explicit credential configuration and inspection, restricted local tools, structured output, and an embedded Agent Skill in one Go binary. npm distribution adds a small JavaScript launcher, three platform packages, and a bundled ripgrep dependency.
+The CLI keeps semantic search, explicit credential configuration and inspection, restricted local tools, structured output, and an embedded Agent Skill in one Go binary. The same binary can also run as a stdio MCP server (`fast-context mcp serve`) that exposes `fast_context_search` and `fast_context_doctor`; see [MCP server](#mcp-server). npm distribution adds a small JavaScript launcher, three platform packages, and a bundled ripgrep dependency.
 
 ## Install
 
@@ -36,6 +36,7 @@ go run ./cmd/fast-context search --project . --format json "where is auth handle
 | `search <query>` | Run AI-driven code discovery through the Windsurf Devstral protocol. |
 | `key extract [--path <path>]` | Inspect the default Linux/WSL Devin CLI TOML or an explicitly selected TOML/`state.vscdb`; databases are never discovered automatically. |
 | `doctor` | Check project path, ripgrep, credentials, and build metadata. |
+| `mcp serve` | Run a stdio MCP server that exposes `fast_context_search` and `fast_context_doctor` to an MCP host. Long-running; configure it in a host instead of running it from an Agent shell. |
 | `skills list` | List embedded Agent Skills. |
 | `skills show <skill> [--reference cli-contract]` | Return the raw embedded `SKILL.md`, an allowlisted reference, or structured JSON. |
 | `schema [--format json] [--pretty] [<canonical-command-path>...]` | Return the versioned, machine-readable CLI command manifest in full or for one canonical command path. |
@@ -68,6 +69,74 @@ Targets accept canonical paths only. Compatibility aliases remain executable, bu
 
 Use known argv directly, reuse a targeted definition for the same CLI version within one task, and reserve the full manifest for generic discovery or cache refresh. If an older binary reports `schema` as unknown, load its embedded version-matched Skill with `fast-context skills show --format content fast-context`; do not guess new flags or parse `--help` as a machine contract.
 
+## MCP server
+
+`fast-context mcp serve` runs the same search and doctor logic as a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio. Configure it in an MCP host; do not run it from an Agent shell. It reads newline-delimited JSON-RPC messages from stdin until EOF, writes only protocol messages to stdout, and writes logs to stderr. It exits `0` on stdin EOF or SIGINT/SIGTERM, `1` on a transport or server failure, and `2` for invalid argv. Only stdio is supported; there is no HTTP or SSE transport.
+
+JSON-style hosts such as Claude Desktop and Cursor:
+
+```json
+{
+  "mcpServers": {
+    "fast-context": {
+      "command": "fast-context",
+      "args": ["mcp", "serve"],
+      "env": {
+        "FAST_CONTEXT_KEY": "<key>"
+      }
+    }
+  }
+}
+```
+
+Through the npm package, use `"command": "npx"` with `"args": ["-y", "@deqiying/fast-context", "mcp", "serve"]`. The launcher passes stdin and stdout through unchanged and sets `FC_RG_PATH` exactly as it does for CLI commands. Hosts on Windows that cannot resolve `npx` directly may need `cmd /c npx ...`; this has not been verified. Codex `config.toml` (check the host documentation for exact fields):
+
+```toml
+[mcp_servers.fast-context]
+command = "fast-context"
+args = ["mcp", "serve"]
+```
+
+The server reads `FC_*`, `FAST_CONTEXT_DEBUG`, and credentials from the host-provided environment once at startup, using the same credential order as the CLI; restart the server after changing them. `FAST_CONTEXT_DEBUG=1` writes per-call progress and SDK session logs to stderr.
+
+| Tool | Behavior | Network |
+| --- | --- | --- |
+| `fast_context_search` | Same pipeline, exclusion policy, retries, and data boundary as `search`. | Sends the query, repository map, and restricted local results to Windsurf. |
+| `fast_context_doctor` | Returns compact JSON byte-identical to `fast-context doctor --format json --project <project_path>`. | None. |
+
+`fast_context_search` keeps the parameter names of upstream `fast-context-mcp@1.5.2`:
+
+| Parameter | Type | Default | Range |
+| --- | --- | --- | --- |
+| `query` | string, required | — | Must contain a non-space character |
+| `project_path` | string, required | — | Absolute path to an existing directory |
+| `tree_depth` | integer | `3` | `0..6` |
+| `max_turns` | integer | `FC_MAX_TURNS` (`3`) | `1..5` |
+| `max_results` | integer | `10` | `1..30` |
+| `exclude_paths` | string[] | `[]` | Same policy as `--exclude` |
+| `include_code_snippets` | boolean | `FC_INCLUDE_SNIPPETS` (`false`) | — |
+
+`max_commands`, the stream timeout, and repo-map settings are server-level and come only from `FC_*` variables. Unlike CLI flags, out-of-range values and unknown keys are rejected by schema validation instead of being clamped. Successful results use the CLI text layout, with hints that name tool parameters and `fast_context_doctor` instead of CLI flags. Validation, credential, authentication, timeout, and payload failures set `isError: true`; "No relevant files found." is a normal result.
+
+`fast_context_doctor` accepts only a required absolute `project_path`. A failed check (`ok=false`) is a normal result; only an empty or relative path sets `isError: true`. It never contacts Windsurf, so `ok=true` does not prove that the key is valid or the remote service is reachable.
+
+Intentional differences from upstream `fast-context-mcp@1.5.2`:
+
+- The server name is `fast-context`, and failed tool calls set `isError: true`.
+- Input schemas declare `additionalProperties: false`.
+- `extract_windsurf_key` is not provided; calling it returns an unknown-tool error. `fast_context_doctor` is new.
+- Credentials follow this project's resolution order and never auto-discover Windsurf `state.vscdb`.
+- On Windows, a path such as `/repo` without a drive letter is not treated as absolute.
+
+| Upstream configuration | Migrate to |
+| --- | --- |
+| `npx -y fast-context-mcp` | `npx -y @deqiying/fast-context mcp serve`, or the installed `fast-context mcp serve` |
+| `env.WINDSURF_API_KEY` | Still honored at priority 3; prefer `FAST_CONTEXT_KEY` |
+| Automatic key reading from the Windsurf database | Set a key explicitly, or run `fast-context key extract --path <state.vscdb>` once in a terminal and configure the result |
+| Prompts or workflows that call `extract_windsurf_key` | Call `fast_context_doctor` to inspect the active credential source |
+
+On stdin EOF the server stops reading and cancels requests that are still in flight, so their responses are not written. MCP hosts keep stdin open for the whole session; scripted tests must read each response before closing stdin.
+
 ## JSON presentation
 
 When a command selects JSON, its default physical output is one compact JSON line followed by one LF. Pass `--pretty` only for human inspection to use two-space indentation and the same trailing LF; for example:
@@ -76,7 +145,7 @@ When a command selects JSON, its default physical output is one compact JSON lin
 fast-context schema --pretty
 ```
 
-JSON layout is determined only by argv, never by TTY, pipes, redirection, or the host environment. `--pretty` is supported by `search`, `key extract`, `doctor`, `skills list`, `skills show`, and `schema`; it has no effect in their text/content modes and does not select JSON implicitly. Existing default formats remain unchanged, and text-only `version` does not accept `--pretty`.
+JSON layout is determined only by argv, never by TTY, pipes, redirection, or the host environment. `--pretty` is supported by `search`, `key extract`, `doctor`, `skills list`, `skills show`, and `schema`; it has no effect in their text/content modes and does not select JSON implicitly. Existing default formats remain unchanged; text-only `version` and protocol-only `mcp serve` do not accept `--pretty`.
 
 ## Search pipeline
 
@@ -138,6 +207,7 @@ The npm launcher sets `FC_RG_PATH` from `@vscode/ripgrep` only when the user has
 ## Security and data boundary
 
 - `search` sends the query, repository map, and requested restricted-tool results to Windsurf. Do not use it when external transmission is not authorized.
+- `mcp serve` applies the same boundary through `fast_context_search`, whose description discloses the Windsurf transmission. `fast_context_doctor` is local-only and returns only redacted key material. No MCP tool returns a credential or reads `state.vscdb`, and MCP stdout carries only JSON-RPC messages.
 - `search` rejects a project root that is exactly the user home directory or a filesystem root (including the current directory when `--project` is omitted) before reading credentials or making any network request. Repositories below the home directory are unaffected.
 - `--include-snippets` is off by default.
 - The local executor accepts only structured `rg`, `readfile`, `tree`, `ls`, and `glob` commands. `--max-commands` is enforced locally; model output cannot raise the limit.
@@ -148,7 +218,7 @@ The npm launcher sets `FC_RG_PATH` from `@vscode/ripgrep` only when the user has
 - API keys are redacted; the npm launcher does not inspect credentials or `.env` files.
 - Runtime commands never discover Windsurf/Devin `state.vscdb`. `key extract --path <state.vscdb>` is an explicit diagnostic action that copies the selected database to a temporary snapshot and normally removes it before returning; abnormal process termination can leave that snapshot behind.
 - Keep `$HOME/.config/fast-context/config.json` outside repositories and use restrictive user-only permissions (`0700` directory / `0600` file on Unix).
-- TLS verification is enabled by default. `FC_INSECURE_TLS=1` is an explicit troubleshooting override.
+- TLS verification is enabled by default. `FC_INSECURE_TLS=1` is an explicit troubleshooting override; do not keep it in a long-lived MCP host configuration.
 
 ## Development and verification
 

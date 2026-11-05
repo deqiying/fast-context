@@ -20,6 +20,9 @@ var defaultCommandHandlers = map[string]commandHandler{
 	"doctor": func(_ context.Context, _ *commandcontract.Registry, parsed ParsedCommand, stdout, stderr io.Writer) int {
 		return runParsedDoctor(parsed, stdout, stderr)
 	},
+	"mcp.serve": func(ctx context.Context, _ *commandcontract.Registry, _ ParsedCommand, stdout, stderr io.Writer) int {
+		return runParsedMCPServe(ctx, stdout, stderr)
+	},
 	"skills.list": func(_ context.Context, _ *commandcontract.Registry, parsed ParsedCommand, stdout, stderr io.Writer) int {
 		return runParsedSkillsList(parsed, stdout, stderr)
 	},

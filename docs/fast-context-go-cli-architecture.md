@@ -12,7 +12,7 @@
 | 实现同等搜索能力 | 中高 | 需要完整移植协议编码、认证、流式响应解析、搜索回合编排 |
 | 达到可发布跨平台工具 | 高 | 需要处理 Windows/macOS/Linux 凭据、ripgrep 分发、协议漂移、错误诊断 |
 
-推荐使用 Go 实现核心能力，并把 MCP 兼容层作为后续可选子命令，而不是 MVP 必需项。
+推荐使用 Go 实现核心能力，并把 MCP 兼容层作为后续可选子命令，而不是 MVP 必需项。该子命令已作为 `fast-context mcp serve` 实现，见 [fast-context-mcp-serve-plan.md](fast-context-mcp-serve-plan.md)。
 
 ## 2. 参考实现快照
 
@@ -67,7 +67,7 @@ MVP 必须保持的功能：
 
 | 功能 | 建议 |
 | --- | --- |
-| MCP server 兼容 | 后续作为 `fast-context mcp serve` 子命令实现 |
+| MCP server 兼容 | 已实现为 `fast-context mcp serve`（stdio），见 [fast-context-mcp-serve-plan.md](fast-context-mcp-serve-plan.md) |
 | GUI/TUI | 暂不做 |
 | 自建语义索引 | 暂不做，保持 Windsurf Devstral 搜索模式 |
 | 替换为其它 LLM provider | 暂不做，会改变核心产品语义 |
@@ -115,7 +115,7 @@ internal/version/
 
 | 模块 | 职责 |
 | --- | --- |
-| `internal/cli` | 基于 command contract 的分派、参数解析、子命令、退出码、用户可读错误；`schema` 在运行时解析前静态返回 |
+| `internal/cli` | 基于 command contract 的分派、参数解析、子命令、退出码、用户可读错误；`schema` 在运行时解析前静态返回；`mcp serve` 的信号处理与退出码映射 |
 | `internal/commandcontract` | 公共 canonical path、兼容 alias、参数、argv binding、help 与 manifest 的单一事实源；`internal/cli` 负责验证 definition 与 handler binding 一一对应 |
 | `internal/config` | 读取 `FC_*` env 和 flag 默认值，并严格解析用户级 JSON 配置 |
 | `internal/credentials` | 按优先级解析 `FAST_CONTEXT_KEY`、本地 JSON、`WINDSURF_API_KEY` 和 Linux/WSL Devin CLI TOML；仅在显式 `--path` 时读取 `state.vscdb` |
@@ -126,8 +126,10 @@ internal/version/
 | `internal/textutil` | 非法 UTF-8 修复与 rune-safe byte-budget 截断 |
 | `internal/windsurf` | 认证、JWT 缓存、rate limit 检查、流式请求 |
 | `internal/protowire` | 无 `.proto` 场景下的 Protobuf wire 编码和 Connect frame |
-| `internal/search` | 多轮搜索编排、工具调用回填、force-answer 逻辑 |
-| `internal/output` | text/json 输出、错误诊断、敏感信息脱敏 |
+| `internal/search` | 多轮搜索编排、工具调用回填、force-answer 逻辑；`DefaultOptions` 为 CLI 与 MCP 共用的运行时默认值映射 |
+| `internal/output` | text/json 输出、错误诊断、敏感信息脱敏；hint 措辞按 CLI 与 MCP 两个调用面区分 |
+| `internal/doctor` | 本地就绪检查与报告（项目、ripgrep、凭据来源），供 CLI `doctor` 与 MCP `fast_context_doctor` 共用 |
+| `internal/mcpserver` | stdio MCP server，注册 `fast_context_search` 与 `fast_context_doctor`；唯一依赖 MCP Go SDK 的包 |
 
 ## 5. 核心数据流
 
@@ -560,10 +562,10 @@ FC_TEST_API_BASE=http://127.0.0.1:...
 5. 输出必须同时支持人读 text 和机器读 JSON。
 6. 对 API key、JWT、数据库路径、HTTP header 中的敏感信息统一脱敏。
 
-如果后续要恢复 MCP 能力，可以在同一套 `internal/search` 上增加：
+MCP 能力已在同一套 `internal/search` 上以下列子命令恢复：
 
 ```text
 fast-context mcp serve
 ```
 
-这样 CLI、MCP、未来可能的 daemon 都复用同一套协议客户端和 executor，避免两套实现分叉。
+CLI 与 MCP 复用同一套协议客户端、executor、输出格式化与 doctor 检查，没有形成第二套实现。设计、合同与验证结果见 [fast-context-mcp-serve-plan.md](fast-context-mcp-serve-plan.md)。

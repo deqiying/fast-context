@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/deqiying/fast-context/internal/commandcontract"
+	"github.com/deqiying/fast-context/internal/doctor"
 	"github.com/deqiying/fast-context/internal/skills"
 )
 
@@ -105,7 +106,7 @@ func TestRegistryBackedHelpIsStatic(t *testing.T) {
 			panic("handler called while serving help: " + commandID)
 		}
 	}
-	paths := [][]string{{"search"}, {"key", "extract"}, {"doctor"}, {"skills", "list"}, {"skills", "show"}, {"version"}, {"schema"}, {"skills", "LS"}, {"skills", "GET"}, {"--version"}, {"-v"}}
+	paths := [][]string{{"search"}, {"key", "extract"}, {"doctor"}, {"mcp", "serve"}, {"skills", "list"}, {"skills", "show"}, {"version"}, {"schema"}, {"skills", "LS"}, {"skills", "GET"}, {"--version"}, {"-v"}}
 	for _, path := range paths {
 		args := append(append([]string{}, path...), "--help")
 		var stdout bytes.Buffer
@@ -115,7 +116,7 @@ func TestRegistryBackedHelpIsStatic(t *testing.T) {
 			t.Fatalf("help %v code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
 		}
 	}
-	for _, args := range [][]string{{}, {"--help"}, {"key"}, {"skills"}, {"skills", "help"}} {
+	for _, args := range [][]string{{}, {"--help"}, {"key"}, {"mcp"}, {"mcp", "help"}, {"skills"}, {"skills", "help"}} {
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		code := executeWithRegistryAndHandlers(context.Background(), defaultCommandRegistry, handlers, args, &stdout, &stderr)
@@ -162,6 +163,10 @@ func TestHelpExposesPrettyOnlyForJSONCommands(t *testing.T) {
 	if code != 0 || stderr != "" || strings.Contains(stdout, "--pretty") {
 		t.Fatalf("version help unexpectedly exposes pretty: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+	code, stdout, stderr = executeForTest(t, "mcp", "serve", "--help")
+	if code != 0 || stderr != "" || strings.Contains(stdout, "--pretty") || !strings.Contains(stdout, "fast-context mcp serve") || !strings.Contains(stdout, "reads JSON-RPC messages from stdin") {
+		t.Fatalf("mcp serve help code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 	code, stdout, stderr = executeForTest(t, "skills", "show", "--help")
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "--reference <cli-contract>") || !strings.Contains(stdout, "Read an allowlisted reference embedded with the Skill.") {
 		t.Fatalf("skills show help omits reference contract: code=%d stdout=%q stderr=%q", code, stdout, stderr)
@@ -195,6 +200,8 @@ func TestInvalidArgumentsReturnBeforeHandlers(t *testing.T) {
 		{"search", "--unknown"},
 		{"key", "extract", "extra"},
 		{"doctor", "extra"},
+		{"mcp", "serve", "extra"},
+		{"mcp", "serve", "--format", "json"},
 		{"skills", "list", "extra"},
 		{"skills", "show"},
 		{"version", "extra"},
@@ -460,6 +467,14 @@ func TestDoctorJSONIncludesAutomationFields(t *testing.T) {
 		if strings.EqualFold(filepath.Base(candidate), "state.vscdb") {
 			t.Fatalf("doctor returned an automatic state database candidate: %s", candidate)
 		}
+	}
+	// MCP 的 fast_context_doctor 使用同一编码方式；两侧共同锁定 doctor JSON 逐字节一致。
+	var want bytes.Buffer
+	if err := json.NewEncoder(&want).Encode(doctor.Inspect(project).JSON()); err != nil {
+		t.Fatal(err)
+	}
+	if stdout != want.String() {
+		t.Fatalf("doctor JSON differs from doctor.Inspect encoding:\n got %s\nwant %s", stdout, want.String())
 	}
 }
 
